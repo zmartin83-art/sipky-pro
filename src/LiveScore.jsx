@@ -1,4 +1,3 @@
-
 import React, { useMemo, useState } from 'react';
 import { supabase } from './supabase';
 
@@ -147,7 +146,6 @@ export default function LiveScore({
     setDoubleOut(false);
     setDartsThisVisit(3);
 
-    // OPRAVA: odpočítanie skóre po každej návšteve.
     // Pri BUST zostáva pôvodné skóre.
     if (!checkout) {
       const nextScores = [...scores];
@@ -344,7 +342,12 @@ export default function LiveScore({
       background: '#081426',
       color: '#f7f8fb',
       fontFamily: 'Arial, Helvetica, sans-serif',
-      padding: 'clamp(10px, 2vw, 24px)',
+      padding: `
+        calc(clamp(10px, 2vw, 24px) + var(--safe-area-top))
+        calc(clamp(10px, 2vw, 24px) + var(--safe-area-right))
+        calc(clamp(10px, 2vw, 24px) + var(--safe-area-bottom))
+        calc(clamp(10px, 2vw, 24px) + var(--safe-area-left))
+      `,
       boxSizing: 'border-box',
       display: 'flex',
       flexDirection: 'column',
