@@ -1,3 +1,4 @@
+
 import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from './supabase';
 
@@ -474,12 +475,21 @@ export default function LiveScore({
     }
   }
 
-  // Predčasné ukončenie iba zatvorí živý zápasový panel.
-  // Nezapisuje neúplný stav ako oficiálny výsledok.
+  // Predčasné ukončenie bez uloženia oficiálneho výsledku.
   function abandonMatch() {
-    if (saving || matchCompleted) return;
+    if (saving) return;
+
     setFinished(false);
-    closeScreen();
+
+    if (typeof onFinish === 'function') {
+      onFinish({
+        legs,
+        history,
+        scores,
+        darts: dartsUsed,
+        cancelled: true,
+      });
+    }
   }
 
   function closeScreen() {
