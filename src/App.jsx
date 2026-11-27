@@ -1,7 +1,8 @@
+
 import React, { useEffect, useState } from 'react';
 import {
   Activity, Bell, CalendarDays, ChevronRight,
-  Club, LayoutDashboard, LogOut, Menu, Settings, ShieldCheck,
+  CircleUserRound, Club, LayoutDashboard, LogOut, Menu, Settings, ShieldCheck,
   Target, Trophy, Users, X
 } from 'lucide-react';
 import { supabase, supabaseConfigured } from './supabase.js';
@@ -48,14 +49,12 @@ export default function App() {
 
       if (!data) return;
       setClub(data.clubs?.name || 'Môj klub');
-
       const id = data.club_id;
       const [p, t, m] = await Promise.all([
         supabase.from('players').select('id', { count: 'exact', head: true }).eq('club_id', id),
         supabase.from('tournaments').select('id', { count: 'exact', head: true }).eq('club_id', id),
         supabase.from('matches').select('id', { count: 'exact', head: true }).eq('club_id', id)
       ]);
-
       setCounts({
         players: p.count ?? '—',
         tournaments: t.count ?? '—',
@@ -123,13 +122,11 @@ export default function App() {
           <div><strong>ŠIPKY <span>PRO</span></strong><small>KLUBOVÁ PLATFORMA</small></div>
           <button className="mobile-close" onClick={() => setMenu(false)}><X /></button>
         </div>
-
         <div className="club-switch">
           <div className="club-avatar"><Club /></div>
           <div className="club-meta"><small>AKTUÁLNY KLUB</small><strong>{club}</strong></div>
           <ChevronRight />
         </div>
-
         <div className="nav-label">MENU</div>
         <nav>
           {navigation.map(([label, Icon]) => (
@@ -140,7 +137,6 @@ export default function App() {
             </button>
           ))}
         </nav>
-
         <div className="sidebar-bottom">
           <div className="online"><span /> Systém pripravený</div>
           <div className="user-card">
@@ -150,9 +146,7 @@ export default function App() {
           </div>
         </div>
       </aside>
-
       {menu && <button className="scrim" onClick={() => setMenu(false)} />}
-
       <main className="main">
         <header className="topbar">
           <button className="menu-button" onClick={() => setMenu(true)}><Menu /></button>
@@ -162,7 +156,6 @@ export default function App() {
             <button className="icon-button"><Bell /></button>
           </div>
         </header>
-
         <div className="content">
           <div className="welcome-row">
             <div>
@@ -173,15 +166,13 @@ export default function App() {
             <div className="welcome-mark"><Target size={42} /></div>
           </div>
 
-          <div className="notice"><span className="notice-dot" /> Klubové rozhranie Šipky Pro</div>
-
+          <div className="notice"><span className="notice-dot" /> Klubové rozhranie Šípky Pro</div>
           <section className="stats-grid">
             <Stat icon={<Users />} label="Registrovaní hráči" value={counts.players} />
             <Stat icon={<Trophy />} label="Turnaje" value={counts.tournaments} />
             <Stat icon={<Target />} label="Zápasy" value={counts.matches} />
             <Stat icon={<Activity />} label="Aktivita klubu" value="—" />
           </section>
-
           <section className="panel-grid">
             <div className="panel main-panel">
               <div className="eyebrow">RÝCHLY PRÍSTUP</div>
