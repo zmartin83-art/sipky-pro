@@ -1,4 +1,6 @@
+
 import React, { useMemo, useState } from 'react';
+import { supabase } from './supabase';
 
 const START_SCORE = 501;
 const MAX_DARTS = 45;
@@ -7,6 +9,7 @@ export default function LiveScore({
   player1 = 'Hráč 1',
   player2 = 'Hráč 2',
   onFinish,
+  matchId,
 }) {
   const [scores, setScores] = useState([START_SCORE, START_SCORE]);
   const [legs, setLegs] = useState([0, 0]);
@@ -20,6 +23,7 @@ export default function LiveScore({
   const [message, setMessage] = useState('');
   const [bullOff, setBullOff] = useState(false);
   const [finished, setFinished] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   const names = [player1, player2];
   const activeName = names[currentPlayer];
@@ -30,11 +34,15 @@ export default function LiveScore({
       const playerVisits = history.filter(
         (item) => item.player === i && !item.bullOff
       );
+
       const thrown = playerVisits.reduce(
-        (sum, item) => sum + item.darts, 0
+        (sum, item) => sum + item.darts,
+        0
       );
+
       const scored = playerVisits.reduce(
-        (sum, item) => sum + item.scored, 0
+        (sum, item) => sum + item.scored,
+        0
       );
 
       return thrown
@@ -52,7 +60,9 @@ export default function LiveScore({
     setVisitInput((old) => old.slice(0, -1));
   }
 
-  function recordVisit() {
+  async function recordVisit() {
+    if (saving) return;
+
     const value = Number(visitInput);
 
     if (
@@ -74,6 +84,7 @@ export default function LiveScore({
     const before = scores[currentPlayer];
     const after = before - value;
     const checkout = after === 0 && doubleOut;
+
     const bust =
       after < 0 ||
       after === 1 ||
@@ -93,6 +104,48 @@ export default function LiveScore({
       leg: legs[0] + legs[1] + 1,
     };
 
+    // Najskôr uložíme návštevu do databázy.
+    // Ak databáza zápis odmietne, lokálne skóre nemeníme.
+    if (matchId) {
+      setSaving(true);
+      setMessage('Ukladám návštevu do databázy...');
+
+      try {
+        const { data, error } = await supabase.rpc(
+          'sp_record_match_visit',
+          {
+            p_match_id: matchId,
+            p_visit_score: value,
+            p_double_out: doubleOut,
+          }
+        );
+
+        if (error) {
+          console.error('Chyba pri ukladaní návštevy:', error);
+          setMessage(
+            `Návštevu sa nepodarilo uložiť: ${error.message}`
+          );
+          return;
+        }
+
+        if (data && data.success === false) {
+          setMessage(
+            data.message || 'Databáza odmietla uložiť návštevu.'
+          );
+          return;
+        }
+      } catch (error) {
+        console.error('Chyba pri ukladaní návštevy:', error);
+        setMessage(
+          `Chyba pri ukladaní: ${error.message || 'Neznáma chyba'}`
+        );
+        return;
+      } finally {
+        setSaving(false);
+      }
+    }
+
+    // Po úspešnom uložení pokračujeme v lokálnom skórovaní.
     const nextDarts = [...dartsUsed];
     nextDarts[currentPlayer] += darts;
 
@@ -107,6 +160,7 @@ export default function LiveScore({
       nextLegs[currentPlayer] += 1;
 
       setLegs(nextLegs);
+
       setLegHistory((old) => [
         ...old,
         {
@@ -182,6 +236,7 @@ export default function LiveScore({
     };
 
     setHistory((old) => [entry, ...old]);
+
     setLegHistory((old) => [
       ...old,
       {
@@ -581,7 +636,7 @@ export default function LiveScore({
               <button
                 key={n}
                 style={styles.key}
-                disabled={bullOff}
+                disabled={bullOff || saving}
                 onClick={() => addDigit(n)}
               >
                 {n}
@@ -590,7 +645,7 @@ export default function LiveScore({
 
             <button
               style={styles.key}
-              disabled={bullOff}
+              disabled={bullOff || saving}
               onClick={() => setVisitInput('')}
             >
               C
@@ -598,7 +653,7 @@ export default function LiveScore({
 
             <button
               style={styles.key}
-              disabled={bullOff}
+              disabled={bullOff || saving}
               onClick={() => addDigit(0)}
             >
               0
@@ -606,7 +661,7 @@ export default function LiveScore({
 
             <button
               style={styles.key}
-              disabled={bullOff}
+              disabled={bullOff || saving}
               onClick={undoDigit}
             >
               ⌫
@@ -635,7 +690,7 @@ export default function LiveScore({
                 type="checkbox"
                 checked={doubleOut}
                 onChange={(e) => setDoubleOut(e.target.checked)}
-                disabled={bullOff}
+                disabled={bullOff || saving}
               />
               Posledná šípka double
             </label>
@@ -655,7 +710,7 @@ export default function LiveScore({
                 onChange={(e) =>
                   setDartsThisVisit(Number(e.target.value))
                 }
-                disabled={bullOff}
+                disabled={bullOff || saving}
                 style={{
                   background: '#1b3452',
                   color: '#fff',
@@ -678,11 +733,12 @@ export default function LiveScore({
               width: '100%',
               marginTop: 10,
               fontSize: 17,
+              opacity: saving ? 0.6 : 1,
             }}
-            disabled={bullOff}
+            disabled={bullOff || saving}
             onClick={recordVisit}
           >
-            POTVRDIŤ NÁVŠTEVU
+            {saving ? 'UKLADÁM...' : 'POTVRDIŤ NÁVŠTEVU'}
           </button>
 
           {bullOff && (
