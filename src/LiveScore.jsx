@@ -104,8 +104,8 @@ export default function LiveScore({
       leg: legs[0] + legs[1] + 1,
     };
 
-    // Najskôr uložíme návštevu do databázy.
-    // Ak databáza zápis odmietne, lokálne skóre nemeníme.
+    // Uloženie návštevy do databázy.
+    // Pri chybe sa lokálne skóre nezmení.
     if (matchId) {
       setSaving(true);
       setMessage('Ukladám návštevu do databázy...');
@@ -145,7 +145,6 @@ export default function LiveScore({
       }
     }
 
-    // Po úspešnom uložení pokračujeme v lokálnom skórovaní.
     const nextDarts = [...dartsUsed];
     nextDarts[currentPlayer] += darts;
 
@@ -256,16 +255,66 @@ export default function LiveScore({
     );
   }
 
-  function finishMatch() {
-    setFinished(true);
+  // Uloženie konečného výsledku do Supabase.
+  async function finishMatch() {
+    if (saving) return;
 
-    if (typeof onFinish === 'function') {
-      onFinish({
-        legs,
-        history,
-        scores,
-        darts: dartsUsed,
-      });
+    if (!matchId) {
+      setMessage('Chýba ID zápasu. Výsledok sa nedá uložiť.');
+      setFinished(false);
+      return;
+    }
+
+    if (legs[0] === legs[1]) {
+      setMessage(
+        'Výsledok nemôže byť remíza. Zápas musí mať víťaza.'
+      );
+      setFinished(false);
+      return;
+    }
+
+    setSaving(true);
+    setMessage('Ukladám konečný výsledok zápasu...');
+
+    try {
+      const { data, error } = await supabase.rpc(
+        'sp_save_match_result',
+        {
+          p_match_id: matchId,
+          p_score1: legs[0],
+          p_score2: legs[1],
+        }
+      );
+
+      if (error) throw error;
+
+      if (data && data.success === false) {
+        throw new Error(
+          data.message || 'Databáza odmietla potvrdiť výsledok.'
+        );
+      }
+
+      setFinished(false);
+      setMessage('Výsledok zápasu bol úspešne uložený.');
+
+      if (typeof onFinish === 'function') {
+        onFinish({
+          legs,
+          history,
+          scores,
+          darts: dartsUsed,
+          saved: true,
+          databaseResult: data,
+        });
+      }
+    } catch (error) {
+      console.error('Uloženie výsledku zlyhalo:', error);
+
+      setMessage(
+        error.message || 'Nepodarilo sa uložiť výsledok zápasu.'
+      );
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -894,10 +943,12 @@ export default function LiveScore({
                   ...styles.button,
                   background: '#bd9136',
                   color: '#101827',
+                  opacity: saving ? 0.6 : 1,
                 }}
+                disabled={saving}
                 onClick={finishMatch}
               >
-                Potvrdiť koniec
+                {saving ? 'UKLADÁM...' : 'POTVRDIŤ KONIEC'}
               </button>
             </div>
           </div>
