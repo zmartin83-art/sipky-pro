@@ -42,7 +42,6 @@ const emptyTournament = {
 };
 
 function App() {
-  // Verejné sledovanie zápasu cez URL ?watch=TOKEN
   const watchToken = new URLSearchParams(window.location.search).get('watch');
 
   const [session, setSession] = useState(null);
@@ -69,7 +68,6 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [mobileMenu, setMobileMenu] = useState(false);
 
-  // Živý zápas
   const [matchPlayer1, setMatchPlayer1] = useState('');
   const [matchPlayer2, setMatchPlayer2] = useState('');
   const [matchStarted, setMatchStarted] = useState(false);
@@ -79,8 +77,9 @@ function App() {
   const [publicLinkLoading, setPublicLinkLoading] = useState(false);
   const [startingMatch, setStartingMatch] = useState(false);
 
-  const canManagePlayers = ['owner', 'admin'].includes(role);
-  const canManageTournaments = ['owner', 'admin', 'organizer'].includes(role);
+  // Správu hráčov a turnajov môže vykonávať iba klubový administrátor.
+  const canManagePlayers = role === 'admin';
+  const canManageTournaments = role === 'admin';
 
   useEffect(() => {
     if (!supabase) {
@@ -199,7 +198,7 @@ function App() {
 
   async function addPlayer(event) {
     event.preventDefault();
-    if (!playerName.trim() || !club) return;
+    if (!canManagePlayers || !playerName.trim() || !club) return;
 
     const { error } = await supabase.from('players').insert({
       club_id: club.id,
@@ -218,6 +217,8 @@ function App() {
   }
 
   async function togglePlayer(player) {
+    if (!canManagePlayers) return;
+
     const { error } = await supabase
       .from('players')
       .update({ active: !player.active })
@@ -228,12 +229,15 @@ function App() {
   }
 
   function openNewTournament() {
+    if (!canManageTournaments) return;
     setEditingTournament(null);
     setTournamentForm(emptyTournament);
     setShowTournamentForm(true);
   }
 
   function openEditTournament(item) {
+    if (!canManageTournaments) return;
+
     setEditingTournament(item.id);
     setTournamentForm({
       name: item.name || '',
@@ -252,7 +256,7 @@ function App() {
 
   async function saveTournament(event) {
     event.preventDefault();
-    if (!club || !tournamentForm.name.trim()) return;
+    if (!canManageTournaments || !club || !tournamentForm.name.trim()) return;
 
     setBusy(true);
 
@@ -286,7 +290,6 @@ function App() {
     setBusy(false);
   }
 
-  // Vytvorenie verejného odkazu – samostatne od spustenia zápasu.
   async function createPublicLink(matchId) {
     if (!matchId) {
       setPublicLinkError('Chýba ID živého zápasu.');
@@ -339,7 +342,6 @@ function App() {
     }
   }
 
-  // Vytvorenie zápasu. Chyba verejného odkazu už nezastaví skórovanie.
   async function startLiveMatch() {
     if (!club || !matchPlayer1 || !matchPlayer2) return;
 
@@ -378,13 +380,10 @@ function App() {
       if (matchError) throw matchError;
       if (!match?.id) throw new Error('Databáza nevrátila ID zápasu.');
 
-      // Najprv otvoríme živý zápas.
       setLiveMatchId(match.id);
       setMatchStarted(true);
       setMessage('Zápas bol vytvorený. Môžeš spustiť skórovanie.');
 
-      // Verejný odkaz sa vytvára až po spustení zápasu.
-      // Ak zlyhá, skórovanie zostane dostupné.
       await createPublicLink(match.id);
     } catch (error) {
       setMessage('Zápas sa nepodarilo vytvoriť: ' + error.message);
@@ -461,8 +460,6 @@ function App() {
     );
   }
 
-  // Verejná stránka sa zobrazí aj neprihláseným návštevníkom.
-  // Tento návrat je až po všetkých hookoch, aby React zachoval ich poradie.
   if (watchToken) {
     return <PublicMatch token={watchToken} />;
   }
@@ -998,7 +995,7 @@ function App() {
         </section>
       </main>
 
-      {showTournamentForm && (
+      {showTournamentForm && canManageTournaments && (
         <div
           className="sp-modal-backdrop"
           onClick={() => setShowTournamentForm(false)}
