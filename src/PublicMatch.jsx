@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useState } from 'react';
+
+import React, { useEffect, useState } from 'react';
 import { supabase } from './supabase';
 
 const REFRESH_INTERVAL = 3000;
@@ -12,50 +13,53 @@ export default function PublicMatch({ token: suppliedToken }) {
   const token = suppliedToken ||
     new URLSearchParams(window.location.search).get('watch');
 
-  const loadMatch = useCallback(async (initial = false) => {
-    if (!token) {
-      setError('Verejný odkaz neobsahuje platný token.');
-      setLoading(false);
-      return;
-    }
-
-    try {
-      const { data, error: rpcError } = await supabase.rpc(
-        'sp_get_public_match',
-        { p_token: token }
-      );
-
-      if (rpcError) {
-        throw rpcError;
-      }
-
-      if (!data || !data.success) {
-        throw new Error('Zápas sa nepodarilo načítať.');
-      }
-
-      setMatch(data);
-      setLastUpdate(new Date());
-      setError('');
-    } catch (err) {
-      if (initial || !match) {
-        setError(
-          'Zápas nie je dostupný. Odkaz môže byť neplatný alebo zrušený.'
-        );
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [token, match]);
-
   useEffect(() => {
-    loadMatch(true);
+    let active = true;
 
-    const interval = setInterval(() => {
-      loadMatch(false);
-    }, REFRESH_INTERVAL);
+    async function loadMatch() {
+      if (!token) {
+        if (active) {
+          setError('Verejný odkaz neobsahuje platný token.');
+          setLoading(false);
+        }
+        return;
+      }
 
-    return () => clearInterval(interval);
-  }, [loadMatch]);
+      try {
+        const { data, error: rpcError } = await supabase.rpc(
+          'sp_get_public_match',
+          { p_token: token }
+        );
+
+        if (rpcError) throw rpcError;
+        if (!data || !data.success) {
+          throw new Error('Zápas sa nepodarilo načítať.');
+        }
+
+        if (active) {
+          setMatch(data);
+          setLastUpdate(new Date());
+          setError('');
+        }
+      } catch (err) {
+        if (active && !match) {
+          setError(
+            'Zápas nie je dostupný. Odkaz môže byť neplatný alebo zrušený.'
+          );
+        }
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+
+    loadMatch();
+    const interval = setInterval(loadMatch, REFRESH_INTERVAL);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [token]);
 
   const styles = {
     page: {
@@ -205,7 +209,10 @@ export default function PublicMatch({ token: suppliedToken }) {
         <header style={styles.header}>
           <div style={styles.brand}>ŠÍPKY PRO</div>
 
-          <div style={styles.live}>
+          <div style={{
+            ...styles.live,
+            background: isFinished ? '#46566b' : '#176b43'
+          }}>
             {isFinished ? 'UKONČENÝ ZÁPAS' : '● LIVE ZÁPAS'}
           </div>
         </header>
@@ -226,9 +233,7 @@ export default function PublicMatch({ token: suppliedToken }) {
                 key={slot}
                 style={{
                   ...styles.card,
-                  borderColor: isCurrent
-                    ? '#e6b84b'
-                    : '#314762',
+                  borderColor: isCurrent ? '#e6b84b' : '#314762',
                   borderWidth: isCurrent ? 2 : 1,
                 }}
               >
@@ -247,13 +252,11 @@ export default function PublicMatch({ token: suppliedToken }) {
                 </div>
 
                 {isCurrent && (
-                  <div
-                    style={{
-                      color: '#e6b84b',
-                      fontWeight: 900,
-                      marginTop: 12,
-                    }}
-                  >
+                  <div style={{
+                    color: '#e6b84b',
+                    fontWeight: 900,
+                    marginTop: 12,
+                  }}>
                     NA ŤAHU
                   </div>
                 )}
@@ -264,7 +267,7 @@ export default function PublicMatch({ token: suppliedToken }) {
 
         <div style={styles.center}>
           <div>
-            <div style={styles.label}>LEGy</div>
+            <div style={styles.label}>LEGY</div>
             <div style={styles.legs}>
               {match.legs1} : {match.legs2}
             </div>
