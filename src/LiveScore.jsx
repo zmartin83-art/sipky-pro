@@ -1,4 +1,3 @@
-
 import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from './supabase';
 
@@ -13,6 +12,7 @@ export default function LiveScore({
 }) {
   const [scores, setScores] = useState([501, 501]);
   const [legs, setLegs] = useState([0, 0]);
+  const [legsToWin, setLegsToWin] = useState(3);
   const [currentPlayer, setCurrentPlayer] = useState(0);
   const [visitInput, setVisitInput] = useState('');
   const [doubleOut, setDoubleOut] = useState(false);
@@ -125,6 +125,21 @@ export default function LiveScore({
         if (!active) return;
 
         applyDatabaseState(data);
+
+        // Počet víťazných legov načítame z nastavenia konkrétneho zápasu.
+        const { data: matchFormat, error: formatError } = await supabase
+          .from('matches')
+          .select('live_legs_to_win')
+          .eq('id', matchId)
+          .maybeSingle();
+
+        if (formatError) throw formatError;
+        if (!active) return;
+
+        const configuredLegs = Number(matchFormat?.live_legs_to_win);
+        if (Number.isInteger(configuredLegs) && configuredLegs > 0) {
+          setLegsToWin(configuredLegs);
+        }
 
         const p1 = data.player1_id;
         const p2 = data.player2_id;
@@ -825,6 +840,29 @@ export default function LiveScore({
           </div>
         </div>
       </div>
+
+      <section
+        style={{
+          ...styles.section,
+          borderColor: '#bd9136',
+          textAlign: 'center',
+          padding: '10px 14px',
+        }}
+      >
+        <div
+          style={{
+            color: '#e6b84b',
+            fontSize: 'clamp(17px, 2.5vw, 22px)',
+            fontWeight: 900,
+            letterSpacing: 1,
+          }}
+        >
+          HRA NA {legsToWin} VÍŤAZNÝCH LEGOV
+        </div>
+        <div style={{ ...styles.small, marginTop: 4 }}>
+          Víťaz zápasu musí získať {legsToWin} legov.
+        </div>
+      </section>
 
       {message && (
         <div
