@@ -3,6 +3,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { supabase, supabaseConfigured } from './supabase';
 import LiveScore from './LiveScore';
 import PublicMatch from './PublicMatch';
+import Statistics from './Statistics';
 import {
   LayoutDashboard, Users, Trophy, Target, BarChart3, Settings,
   LogOut, Plus, Search, CalendarDays, MapPin, Pencil,
@@ -979,10 +980,13 @@ function App() {
             </>
           )}
 
-          {page !== 'Prehľad' &&
+          {page === 'Štatistiky' ? (
+            <Statistics clubId={club?.id} players={players} role={role} />
+          ) : page !== 'Prehľad' &&
             page !== 'Hráči' &&
             page !== 'Turnaje' &&
-            page !== 'Zápasy' && (
+            page !== 'Zápasy' &&
+            page !== 'Štatistiky' && (
               <div className="sp-page-title">
                 <div>
                   <span className="sp-kicker">ŠÍPKY PRO</span>
