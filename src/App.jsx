@@ -74,6 +74,8 @@ function App() {
   const [matchStarted, setMatchStarted] = useState(false);
   const [liveMatchId, setLiveMatchId] = useState(null);
   const [publicMatchUrl, setPublicMatchUrl] = useState('');
+  const [publicLinkError, setPublicLinkError] = useState('');
+  const [publicLinkLoading, setPublicLinkLoading] = useState(false);
   const [startingMatch, setStartingMatch] = useState(false);
 
   const canManagePlayers = ['owner', 'admin'].includes(role);
@@ -190,6 +192,8 @@ function App() {
     setMatchStarted(false);
     setLiveMatchId(null);
     setPublicMatchUrl('');
+    setPublicLinkError('');
+    setPublicLinkLoading(false);
   }
 
   async function addPlayer(event) {
@@ -281,7 +285,60 @@ function App() {
     setBusy(false);
   }
 
-  // Vytvorenie zápasu a verejného odkazu pre divákov
+  // Vytvorenie verejného odkazu – samostatne od spustenia zápasu.
+  async function createPublicLink(matchId) {
+    if (!matchId) {
+      setPublicLinkError('Chýba ID živého zápasu.');
+      return;
+    }
+
+    setPublicLinkLoading(true);
+    setPublicLinkError('');
+
+    try {
+      const expiresAt = new Date(
+        Date.now() + 24 * 60 * 60 * 1000
+      ).toISOString();
+
+      const { data, error } = await supabase.rpc(
+        'sp_create_match_public_link',
+        {
+          p_match_id: matchId,
+          p_expires_at: expiresAt,
+        }
+      );
+
+      if (error) throw error;
+
+      const linkResult = Array.isArray(data) ? data[0] : data;
+      const token =
+        linkResult?.token ||
+        linkResult?.public_token ||
+        linkResult?.data?.token;
+
+      if (!token) {
+        throw new Error(
+          linkResult?.message ||
+          'Databáza nevrátila platný token verejného odkazu.'
+        );
+      }
+
+      const url = new URL(window.location.href);
+      url.search = '';
+      url.searchParams.set('watch', token);
+
+      setPublicMatchUrl(url.toString());
+      setPublicLinkError('');
+    } catch (error) {
+      setPublicLinkError(
+        error?.message || 'Verejný odkaz sa nepodarilo vytvoriť.'
+      );
+    } finally {
+      setPublicLinkLoading(false);
+    }
+  }
+
+  // Vytvorenie zápasu. Chyba verejného odkazu už nezastaví skórovanie.
   async function startLiveMatch() {
     if (!club || !matchPlayer1 || !matchPlayer2) return;
 
@@ -293,6 +350,8 @@ function App() {
     setStartingMatch(true);
     setMessage('');
     setPublicMatchUrl('');
+    setPublicLinkError('');
+    setPublicLinkLoading(false);
 
     try {
       const { data: match, error: matchError } = await supabase
@@ -318,48 +377,16 @@ function App() {
       if (matchError) throw matchError;
       if (!match?.id) throw new Error('Databáza nevrátila ID zápasu.');
 
+      // Najprv otvoríme živý zápas.
       setLiveMatchId(match.id);
-
-      const expiresAt = new Date(
-        Date.now() + 24 * 60 * 60 * 1000
-      ).toISOString();
-
-      const { data: linkData, error: linkError } = await supabase.rpc(
-        'sp_create_match_public_link',
-        {
-          p_match_id: match.id,
-          p_expires_at: expiresAt,
-        }
-      );
-
-      if (linkError) {
-        throw new Error(
-          'Zápas sa vytvoril, ale verejný odkaz sa nepodarilo vytvoriť: ' +
-          linkError.message
-        );
-      }
-
-      const linkResult = Array.isArray(linkData) ? linkData[0] : linkData;
-      const token =
-        linkResult?.token ||
-        linkResult?.public_token ||
-        linkResult?.data?.token;
-
-      if (!token) {
-        throw new Error(
-          'Zápas sa vytvoril, ale odpoveď databázy neobsahuje token odkazu.'
-        );
-      }
-
-      const url = new URL(window.location.href);
-      url.search = '';
-      url.searchParams.set('watch', token);
-
-      setPublicMatchUrl(url.toString());
       setMatchStarted(true);
       setMessage('Zápas bol vytvorený. Môžeš spustiť skórovanie.');
+
+      // Verejný odkaz sa vytvára až po spustení zápasu.
+      // Ak zlyhá, skórovanie zostane dostupné.
+      await createPublicLink(match.id);
     } catch (error) {
-      setMessage('Zápas sa nepodarilo správne spustiť: ' + error.message);
+      setMessage('Zápas sa nepodarilo vytvoriť: ' + error.message);
     } finally {
       setStartingMatch(false);
     }
@@ -380,6 +407,8 @@ function App() {
     setMatchStarted(false);
     setLiveMatchId(null);
     setPublicMatchUrl('');
+    setPublicLinkError('');
+    setPublicLinkLoading(false);
   }
 
   const tournamentStats = useMemo(() => STATUS.map(item => ({
@@ -877,32 +906,61 @@ function App() {
                     ← Späť na zápasy
                   </button>
 
-                  {publicMatchUrl && (
-                    <div className="sp-public-link">
-                      <div>
-                        <strong>Verejný odkaz pre divákov</strong>
-                        <p>Pošli tento odkaz ľuďom, ktorí chcú sledovať zápas online.</p>
+                  <div className="sp-public-link">
+                    <div>
+                      <strong>Verejný odkaz pre divákov</strong>
+                      <p>
+                        Pošli tento odkaz ľuďom, ktorí chcú sledovať zápas online.
+                      </p>
+
+                      {publicMatchUrl ? (
                         <input
                           readOnly
                           value={publicMatchUrl}
                           onFocus={e => e.target.select()}
                         />
-                      </div>
-                      <div className="sp-link-actions">
-                        <button className="sp-primary" onClick={copyPublicLink}>
-                          <Copy size={16} /> Kopírovať odkaz
-                        </button>
-                        <a
-                          className="sp-outline"
-                          href={publicMatchUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          <ExternalLink size={16} /> Otvoriť
-                        </a>
-                      </div>
+                      ) : (
+                        <p className="sp-error">
+                          {publicLinkLoading
+                            ? 'Vytváram verejný odkaz…'
+                            : publicLinkError ||
+                              'Verejný odkaz zatiaľ nie je vytvorený.'}
+                        </p>
+                      )}
                     </div>
-                  )}
+
+                    <div className="sp-link-actions">
+                      {publicMatchUrl ? (
+                        <>
+                          <button
+                            className="sp-primary"
+                            onClick={copyPublicLink}
+                          >
+                            <Copy size={16} /> Kopírovať odkaz
+                          </button>
+
+                          <a
+                            className="sp-outline"
+                            href={publicMatchUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            <ExternalLink size={16} /> Otvoriť
+                          </a>
+                        </>
+                      ) : (
+                        <button
+                          className="sp-primary"
+                          disabled={publicLinkLoading || !liveMatchId}
+                          onClick={() => createPublicLink(liveMatchId)}
+                        >
+                          {publicLinkLoading
+                            ? 'Vytváram…'
+                            : 'Vytvoriť odkaz'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
 
                   <LiveScore
                     matchId={liveMatchId}
