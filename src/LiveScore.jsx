@@ -514,7 +514,7 @@ export default function LiveScore({
           outline-offset: 2px;
         }
 
-        @media (max-width: 650px) {
+        @media (max-width: 850px) {
           .sp-lower {
             grid-template-columns: 1fr !important;
           }
