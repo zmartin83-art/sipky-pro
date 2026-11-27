@@ -1,9 +1,9 @@
-
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, supabaseConfigured } from './supabase';
 import LiveScore from './LiveScore';
 import PublicMatch from './PublicMatch';
 import Statistics from './Statistics';
+import Members from './Members';
 import {
   LayoutDashboard, Users, Trophy, Target, BarChart3, Settings,
   LogOut, Plus, Search, CalendarDays, MapPin, Pencil,
@@ -42,7 +42,10 @@ const emptyTournament = {
 };
 
 function App() {
-  const watchToken = new URLSearchParams(window.location.search).get('watch');
+  const params = new URLSearchParams(window.location.search);
+  const watchToken = params.get('watch');
+  const inviteToken = params.get('invite');
+  const invitationProcessed = useRef(false);
 
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -77,7 +80,6 @@ function App() {
   const [publicLinkLoading, setPublicLinkLoading] = useState(false);
   const [startingMatch, setStartingMatch] = useState(false);
 
-  // Správu hráčov a turnajov môže vykonávať iba klubový administrátor.
   const canManagePlayers = role === 'admin';
   const canManageTournaments = role === 'admin';
 
@@ -87,8 +89,9 @@ function App() {
       return;
     }
 
-    supabase.auth.getSession().then(({ data }) => {
-      setSession(data.session);
+    supabase.auth.getSession().then(({ data, error }) => {
+      if (error) setAuthError(error.message);
+      setSession(data?.session || null);
       setLoading(false);
     });
 
@@ -100,17 +103,55 @@ function App() {
   }, []);
 
   useEffect(() => {
-    if (session?.user) loadClub();
-    else {
+    if (!session?.user) {
       setClub(null);
       setPlayers([]);
       setTournaments([]);
+      setRole('viewer');
+      return;
+    }
+
+    if (inviteToken && !invitationProcessed.current) {
+      acceptInvitation();
+    } else {
+      loadClub();
     }
   }, [session]);
 
-  async function loadClub() {
+  function removeInviteFromUrl() {
+    const url = new URL(window.location.href);
+    url.searchParams.delete('invite');
+    window.history.replaceState({}, '', url.toString());
+  }
+
+  async function acceptInvitation() {
+    if (!inviteToken || !session?.user || invitationProcessed.current) return;
+
+    invitationProcessed.current = true;
     setLoading(true);
     setMessage('');
+
+    const { error } = await supabase.rpc('accept_club_invitation', {
+      p_token: inviteToken,
+    });
+
+    removeInviteFromUrl();
+
+    if (error) {
+      setMessage('Pozvánku sa nepodarilo prijať: ' + error.message);
+      setLoading(false);
+      await loadClub();
+      return;
+    }
+
+    setMessage('Pozvánka bola úspešne prijatá. Vitaj v klube!');
+    await loadClub();
+  }
+
+  async function loadClub() {
+    if (!session?.user?.id) return;
+
+    setLoading(true);
 
     const { data, error } = await supabase
       .from('club_members')
@@ -127,12 +168,18 @@ function App() {
 
     if (!data) {
       setClub(null);
+      setPlayers([]);
+      setTournaments([]);
+      setRole('viewer');
       setMessage('Tento účet zatiaľ nemá priradený klub.');
       setLoading(false);
       return;
     }
 
-    setClub({ id: data.club_id, name: data.clubs?.name || 'Klub' });
+    setClub({
+      id: data.club_id,
+      name: data.clubs?.name || 'Klub',
+    });
     setRole((data.role || 'viewer').toLowerCase());
 
     await Promise.all([
@@ -178,9 +225,10 @@ function App() {
       ? await supabase.auth.signInWithPassword({ email, password })
       : await supabase.auth.signUp({ email, password });
 
-    if (result.error) setAuthError(result.error.message);
-    else if (authMode === 'register' && !result.data.session) {
-      setAuthError('Registrácia prebehla. Potvrď e-mail a potom sa prihlás.');
+    if (result.error) {
+      setAuthError(result.error.message);
+    } else if (authMode === 'register' && !result.data.session) {
+      setAuthError('Registrácia prebehla. Potvrď e-mail a potom sa prihlás. Pozvánkový odkaz zostane platný.');
     }
 
     setAuthBusy(false);
@@ -207,12 +255,13 @@ function App() {
       active: true,
     });
 
-    if (error) setMessage('Hráča sa nepodarilo pridať: ' + error.message);
-    else {
+    if (error) {
+      setMessage('Hráča sa nepodarilo pridať: ' + error.message);
+    } else {
       setPlayerName('');
       setPlayerNickname('');
       setMessage('Hráč bol úspešne pridaný.');
-      loadPlayers();
+      await loadPlayers();
     }
   }
 
@@ -225,7 +274,7 @@ function App() {
       .eq('id', player.id);
 
     if (error) setMessage(error.message);
-    else loadPlayers();
+    else await loadPlayers();
   }
 
   function openNewTournament() {
@@ -300,9 +349,7 @@ function App() {
     setPublicLinkError('');
 
     try {
-      const expiresAt = new Date(
-        Date.now() + 24 * 60 * 60 * 1000
-      ).toISOString();
+      const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
 
       const { data, error } = await supabase.rpc(
         'sp_create_match_public_link',
@@ -334,9 +381,7 @@ function App() {
       setPublicMatchUrl(url.toString());
       setPublicLinkError('');
     } catch (error) {
-      setPublicLinkError(
-        error?.message || 'Verejný odkaz sa nepodarilo vytvoriť.'
-      );
+      setPublicLinkError(error?.message || 'Verejný odkaz sa nepodarilo vytvoriť.');
     } finally {
       setPublicLinkLoading(false);
     }
@@ -460,9 +505,7 @@ function App() {
     );
   }
 
-  if (watchToken) {
-    return <PublicMatch token={watchToken} />;
-  }
+  if (watchToken) return <PublicMatch token={watchToken} />;
 
   if (loading) {
     return (
@@ -480,6 +523,12 @@ function App() {
           <div className="sp-logo">ŠÍPKY <span>PRO</span></div>
           <p className="sp-kicker">DARTS MANAGEMENT PLATFORM</p>
           <h1>{authMode === 'login' ? 'Prihlásenie' : 'Vytvoriť účet'}</h1>
+
+          {inviteToken && (
+            <div className="sp-invite-notice">
+              Máš klubovú pozvánku. Prihlás sa alebo si vytvor účet, aby si ju mohol prijať.
+            </div>
+          )}
 
           <label>E-mail</label>
           <input
@@ -583,10 +632,7 @@ function App() {
 
       <main className="sp-main">
         <header className="sp-topbar">
-          <button
-            className="sp-menu"
-            onClick={() => setMobileMenu(!mobileMenu)}
-          >
+          <button className="sp-menu" onClick={() => setMobileMenu(!mobileMenu)}>
             <Menu />
           </button>
 
@@ -647,6 +693,7 @@ function App() {
                     <span>{statusLabel(t.status)}</span>
                   </div>
                 ))}
+                {!tournaments.length && <p className="sp-empty">Zatiaľ tu nie sú žiadne turnaje.</p>}
               </div>
             </>
           )}
@@ -695,9 +742,7 @@ function App() {
               <div className="sp-panel">
                 {filteredPlayers.map(p => (
                   <div className="sp-player-row" key={p.id}>
-                    <div className="sp-avatar">
-                      {p.name?.[0]?.toUpperCase()}
-                    </div>
+                    <div className="sp-avatar">{p.name?.[0]?.toUpperCase()}</div>
                     <div className="sp-player-info">
                       <strong>{p.name}</strong>
                       <small>{p.nickname || 'Bez prezývky'}</small>
@@ -706,19 +751,13 @@ function App() {
                       {p.active ? 'Aktívny' : 'Neaktívny'}
                     </span>
                     {canManagePlayers && (
-                      <button
-                        className="sp-icon-btn"
-                        onClick={() => togglePlayer(p)}
-                      >
+                      <button className="sp-icon-btn" onClick={() => togglePlayer(p)}>
                         {p.active ? 'Deaktivovať' : 'Aktivovať'}
                       </button>
                     )}
                   </div>
                 ))}
-
-                {!filteredPlayers.length && (
-                  <p className="sp-empty">Nenašli sa žiadni hráči.</p>
-                )}
+                {!filteredPlayers.length && <p className="sp-empty">Nenašli sa žiadni hráči.</p>}
               </div>
             </>
           )}
@@ -731,7 +770,6 @@ function App() {
                   <h1>Turnaje</h1>
                   <p>Prehľad a správa všetkých klubových turnajov</p>
                 </div>
-
                 {canManageTournaments && (
                   <button className="sp-primary" onClick={openNewTournament}>
                     <Plus size={18} /> Nový turnaj
@@ -772,9 +810,7 @@ function App() {
                 {filteredTournaments.map(t => (
                   <article className="sp-tournament-card" key={t.id}>
                     <div className="sp-tournament-card-top">
-                      <span className={`sp-status ${t.status}`}>
-                        {statusLabel(t.status)}
-                      </span>
+                      <span className={`sp-status ${t.status}`}>{statusLabel(t.status)}</span>
                       <span className="sp-game">{t.game_type || '501'}</span>
                     </div>
 
@@ -782,44 +818,24 @@ function App() {
                     <p className="sp-format">{formatLabel(t.format)}</p>
 
                     <div className="sp-tournament-meta">
-                      <span>
-                        <CalendarDays size={15} />
-                        {t.event_date || 'Dátum neurčený'} {t.start_time?.slice(0, 5) || ''}
-                      </span>
-                      <span>
-                        <MapPin size={15} />
-                        {t.location || 'Miesto neurčené'}
-                      </span>
-                      <span>
-                        <Users size={15} />
-                        {t.max_players || 'Bez limitu'} hráčov
-                      </span>
-                      <span>
-                        <Target size={15} />
-                        {t.board_count} terčov
-                      </span>
+                      <span><CalendarDays size={15} /> {t.event_date || 'Dátum neurčený'} {t.start_time?.slice(0, 5) || ''}</span>
+                      <span><MapPin size={15} /> {t.location || 'Miesto neurčené'}</span>
+                      <span><Users size={15} /> {t.max_players || 'Bez limitu'} hráčov</span>
+                      <span><Target size={15} /> {t.board_count} terčov</span>
                     </div>
 
                     <div className="sp-tournament-card-bottom">
-                      <span>
-                        Štartovné: <strong>{Number(t.entry_fee || 0).toFixed(2)} €</strong>
-                      </span>
+                      <span>Štartovné: <strong>{Number(t.entry_fee || 0).toFixed(2)} €</strong></span>
                       {canManageTournaments && (
-                        <button
-                          className="sp-outline"
-                          onClick={() => openEditTournament(t)}
-                        >
+                        <button className="sp-outline" onClick={() => openEditTournament(t)}>
                           <Pencil size={15} /> Upraviť
                         </button>
                       )}
                     </div>
                   </article>
                 ))}
-
                 {!filteredTournaments.length && (
-                  <div className="sp-empty-panel">
-                    V tejto kategórii zatiaľ nie sú žiadne turnaje.
-                  </div>
+                  <div className="sp-empty-panel">V tejto kategórii zatiaľ nie sú žiadne turnaje.</div>
                 )}
               </div>
             </>
@@ -843,31 +859,17 @@ function App() {
                     <div className="sp-form-grid">
                       <label>
                         Prvý hráč
-                        <select
-                          value={matchPlayer1}
-                          onChange={e => setMatchPlayer1(e.target.value)}
-                        >
+                        <select value={matchPlayer1} onChange={e => setMatchPlayer1(e.target.value)}>
                           <option value="">Vyber hráča</option>
-                          {activePlayers.map(p => (
-                            <option key={p.id} value={p.id}>
-                              {p.name}
-                            </option>
-                          ))}
+                          {activePlayers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                         </select>
                       </label>
 
                       <label>
                         Druhý hráč
-                        <select
-                          value={matchPlayer2}
-                          onChange={e => setMatchPlayer2(e.target.value)}
-                        >
+                        <select value={matchPlayer2} onChange={e => setMatchPlayer2(e.target.value)}>
                           <option value="">Vyber hráča</option>
-                          {activePlayers.map(p => (
-                            <option key={p.id} value={p.id}>
-                              {p.name}
-                            </option>
-                          ))}
+                          {activePlayers.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
                         </select>
                       </label>
                     </div>
@@ -875,12 +877,7 @@ function App() {
                     <button
                       className="sp-primary"
                       style={{ marginTop: 20 }}
-                      disabled={
-                        startingMatch ||
-                        !matchPlayer1 ||
-                        !matchPlayer2 ||
-                        matchPlayer1 === matchPlayer2
-                      }
+                      disabled={startingMatch || !matchPlayer1 || !matchPlayer2 || matchPlayer1 === matchPlayer2}
                       onClick={startLiveMatch}
                     >
                       <Target size={18} />
@@ -888,41 +885,25 @@ function App() {
                     </button>
 
                     {activePlayers.length < 2 && (
-                      <p className="sp-empty">
-                        Na spustenie zápasu potrebuješ aspoň dvoch aktívnych hráčov.
-                      </p>
+                      <p className="sp-empty">Na spustenie zápasu potrebuješ aspoň dvoch aktívnych hráčov.</p>
                     )}
                   </div>
                 </>
               ) : (
                 <>
-                  <button
-                    className="sp-outline"
-                    style={{ marginBottom: 15 }}
-                    onClick={leaveLiveMatch}
-                  >
+                  <button className="sp-outline" style={{ marginBottom: 15 }} onClick={leaveLiveMatch}>
                     ← Späť na zápasy
                   </button>
 
                   <div className="sp-public-link">
                     <div>
                       <strong>Verejný odkaz pre divákov</strong>
-                      <p>
-                        Pošli tento odkaz ľuďom, ktorí chcú sledovať zápas online.
-                      </p>
-
+                      <p>Pošli tento odkaz ľuďom, ktorí chcú sledovať zápas online.</p>
                       {publicMatchUrl ? (
-                        <input
-                          readOnly
-                          value={publicMatchUrl}
-                          onFocus={e => e.target.select()}
-                        />
+                        <input readOnly value={publicMatchUrl} onFocus={e => e.target.select()} />
                       ) : (
                         <p className="sp-error">
-                          {publicLinkLoading
-                            ? 'Vytváram verejný odkaz…'
-                            : publicLinkError ||
-                              'Verejný odkaz zatiaľ nie je vytvorený.'}
+                          {publicLinkLoading ? 'Vytváram verejný odkaz…' : publicLinkError || 'Verejný odkaz zatiaľ nie je vytvorený.'}
                         </p>
                       )}
                     </div>
@@ -930,31 +911,16 @@ function App() {
                     <div className="sp-link-actions">
                       {publicMatchUrl ? (
                         <>
-                          <button
-                            className="sp-primary"
-                            onClick={copyPublicLink}
-                          >
+                          <button className="sp-primary" onClick={copyPublicLink}>
                             <Copy size={16} /> Kopírovať odkaz
                           </button>
-
-                          <a
-                            className="sp-outline"
-                            href={publicMatchUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
+                          <a className="sp-outline" href={publicMatchUrl} target="_blank" rel="noreferrer">
                             <ExternalLink size={16} /> Otvoriť
                           </a>
                         </>
                       ) : (
-                        <button
-                          className="sp-primary"
-                          disabled={publicLinkLoading || !liveMatchId}
-                          onClick={() => createPublicLink(liveMatchId)}
-                        >
-                          {publicLinkLoading
-                            ? 'Vytváram…'
-                            : 'Vytvoriť odkaz'}
+                        <button className="sp-primary" disabled={publicLinkLoading || !liveMatchId} onClick={() => createPublicLink(liveMatchId)}>
+                          {publicLinkLoading ? 'Vytváram…' : 'Vytvoriť odkaz'}
                         </button>
                       )}
                     </div>
@@ -965,9 +931,7 @@ function App() {
                     player1={players.find(p => p.id === matchPlayer1)?.name || 'Hráč 1'}
                     player2={players.find(p => p.id === matchPlayer2)?.name || 'Hráč 2'}
                     onFinish={result => {
-                      setMessage(
-                        `Výsledok zápasu: ${result.legs[0]} : ${result.legs[1]}.`
-                      );
+                      setMessage(`Výsledok zápasu: ${result.legs[0]} : ${result.legs[1]}.`);
                       setMatchStarted(false);
                       setPage('Zápasy');
                     }}
@@ -977,44 +941,40 @@ function App() {
             </>
           )}
 
-          {page === 'Štatistiky' ? (
+          {page === 'Štatistiky' && (
             <Statistics clubId={club?.id} players={players} role={role} />
-          ) : page !== 'Prehľad' &&
-            page !== 'Hráči' &&
-            page !== 'Turnaje' &&
-            page !== 'Zápasy' &&
-            page !== 'Štatistiky' && (
-              <div className="sp-page-title">
-                <div>
-                  <span className="sp-kicker">ŠÍPKY PRO</span>
-                  <h1>{page}</h1>
-                  <p>Tento modul bude nasledovať v ďalšej fáze vývoja.</p>
-                </div>
+          )}
+
+          {page === 'Členovia klubu' && (
+            <Members
+              supabase={supabase}
+              club={club}
+              role={role}
+              userId={session.user.id}
+            />
+          )}
+
+          {page === 'Nastavenia' && (
+            <div className="sp-page-title">
+              <div>
+                <span className="sp-kicker">ŠÍPKY PRO</span>
+                <h1>Nastavenia</h1>
+                <p>Nastavenia klubu budú doplnené v ďalšej fáze vývoja.</p>
               </div>
-            )}
+            </div>
+          )}
         </section>
       </main>
 
       {showTournamentForm && canManageTournaments && (
-        <div
-          className="sp-modal-backdrop"
-          onClick={() => setShowTournamentForm(false)}
-        >
-          <form
-            className="sp-modal"
-            onSubmit={saveTournament}
-            onClick={e => e.stopPropagation()}
-          >
+        <div className="sp-modal-backdrop" onClick={() => setShowTournamentForm(false)}>
+          <form className="sp-modal" onSubmit={saveTournament} onClick={e => e.stopPropagation()}>
             <div className="sp-modal-head">
               <div>
                 <span className="sp-kicker">SPRÁVA SÚŤAŽÍ</span>
                 <h2>{editingTournament ? 'Upraviť turnaj' : 'Nový turnaj'}</h2>
               </div>
-              <button
-                type="button"
-                className="sp-icon-btn"
-                onClick={() => setShowTournamentForm(false)}
-              >
+              <button type="button" className="sp-icon-btn" onClick={() => setShowTournamentForm(false)}>
                 <X />
               </button>
             </div>
@@ -1023,10 +983,7 @@ function App() {
               Názov turnaja
               <input
                 value={tournamentForm.name}
-                onChange={e => setTournamentForm({
-                  ...tournamentForm,
-                  name: e.target.value
-                })}
+                onChange={e => setTournamentForm({ ...tournamentForm, name: e.target.value })}
                 required
               />
             </label>
@@ -1034,13 +991,7 @@ function App() {
             <div className="sp-form-grid">
               <label>
                 Typ hry
-                <select
-                  value={tournamentForm.game_type}
-                  onChange={e => setTournamentForm({
-                    ...tournamentForm,
-                    game_type: e.target.value
-                  })}
-                >
+                <select value={tournamentForm.game_type} onChange={e => setTournamentForm({ ...tournamentForm, game_type: e.target.value })}>
                   <option value="501">501</option>
                   <option value="301">301</option>
                   <option value="701">701</option>
@@ -1050,13 +1001,7 @@ function App() {
 
               <label>
                 Formát
-                <select
-                  value={tournamentForm.format}
-                  onChange={e => setTournamentForm({
-                    ...tournamentForm,
-                    format: e.target.value
-                  })}
-                >
+                <select value={tournamentForm.format} onChange={e => setTournamentForm({ ...tournamentForm, format: e.target.value })}>
                   <option value="single_elimination">Vyraďovací pavúk</option>
                   <option value="round_robin">Každý s každým</option>
                   <option value="groups_playoff">Skupiny + pavúk</option>
@@ -1065,13 +1010,7 @@ function App() {
 
               <label>
                 Stav
-                <select
-                  value={tournamentForm.status}
-                  onChange={e => setTournamentForm({
-                    ...tournamentForm,
-                    status: e.target.value
-                  })}
-                >
+                <select value={tournamentForm.status} onChange={e => setTournamentForm({ ...tournamentForm, status: e.target.value })}>
                   <option value="planned">Pripravovaný</option>
                   <option value="ongoing">Prebieha</option>
                   <option value="completed">Ukončený</option>
@@ -1081,86 +1020,37 @@ function App() {
 
               <label>
                 Dátum
-                <input
-                  type="date"
-                  value={tournamentForm.event_date}
-                  onChange={e => setTournamentForm({
-                    ...tournamentForm,
-                    event_date: e.target.value
-                  })}
-                />
+                <input type="date" value={tournamentForm.event_date} onChange={e => setTournamentForm({ ...tournamentForm, event_date: e.target.value })} />
               </label>
 
               <label>
                 Čas
-                <input
-                  type="time"
-                  value={tournamentForm.start_time}
-                  onChange={e => setTournamentForm({
-                    ...tournamentForm,
-                    start_time: e.target.value
-                  })}
-                />
+                <input type="time" value={tournamentForm.start_time} onChange={e => setTournamentForm({ ...tournamentForm, start_time: e.target.value })} />
               </label>
 
               <label>
                 Počet hráčov
-                <input
-                  type="number"
-                  min="2"
-                  value={tournamentForm.max_players}
-                  onChange={e => setTournamentForm({
-                    ...tournamentForm,
-                    max_players: e.target.value
-                  })}
-                />
+                <input type="number" min="2" value={tournamentForm.max_players} onChange={e => setTournamentForm({ ...tournamentForm, max_players: e.target.value })} />
               </label>
 
               <label>
                 Štartovné (€)
-                <input
-                  type="number"
-                  min="0"
-                  step="0.01"
-                  value={tournamentForm.entry_fee}
-                  onChange={e => setTournamentForm({
-                    ...tournamentForm,
-                    entry_fee: e.target.value
-                  })}
-                />
+                <input type="number" min="0" step="0.01" value={tournamentForm.entry_fee} onChange={e => setTournamentForm({ ...tournamentForm, entry_fee: e.target.value })} />
               </label>
 
               <label>
                 Počet terčov
-                <input
-                  type="number"
-                  min="1"
-                  value={tournamentForm.board_count}
-                  onChange={e => setTournamentForm({
-                    ...tournamentForm,
-                    board_count: e.target.value
-                  })}
-                />
+                <input type="number" min="1" value={tournamentForm.board_count} onChange={e => setTournamentForm({ ...tournamentForm, board_count: e.target.value })} />
               </label>
             </div>
 
             <label>
               Miesto konania
-              <input
-                value={tournamentForm.location}
-                onChange={e => setTournamentForm({
-                  ...tournamentForm,
-                  location: e.target.value
-                })}
-              />
+              <input value={tournamentForm.location} onChange={e => setTournamentForm({ ...tournamentForm, location: e.target.value })} />
             </label>
 
             <div className="sp-modal-actions">
-              <button
-                type="button"
-                className="sp-outline"
-                onClick={() => setShowTournamentForm(false)}
-              >
+              <button type="button" className="sp-outline" onClick={() => setShowTournamentForm(false)}>
                 Zrušiť
               </button>
               <button className="sp-primary" disabled={busy}>
@@ -1225,17 +1115,9 @@ function App() {
           place-items:center;
           font-weight:950;
         }
-        .sp-brand strong {
-          display:block;
-          font-size:17px;
-          letter-spacing:1px;
-        }
+        .sp-brand strong { display:block; font-size:17px; letter-spacing:1px; }
         .sp-brand strong span { color:var(--gold); }
-        .sp-brand small {
-          font-size:9px;
-          letter-spacing:2px;
-          color:var(--muted);
-        }
+        .sp-brand small { font-size:9px; letter-spacing:2px; color:var(--muted); }
         .sp-club {
           margin:25px 7px 20px;
           padding:13px;
@@ -1252,8 +1134,7 @@ function App() {
         }
         .sp-club strong { color:var(--gold2); }
         .sp-sidebar nav { display:grid; gap:6px; }
-        .sp-sidebar nav button,
-        .sp-sidebar-bottom button {
+        .sp-sidebar nav button,.sp-sidebar-bottom button {
           border:0;
           background:transparent;
           color:#aebbd0;
@@ -1269,8 +1150,7 @@ function App() {
           color:var(--gold2);
           border:1px solid rgba(217,180,92,.25);
         }
-        .sp-sidebar nav button:hover,
-        .sp-sidebar-bottom button:hover {
+        .sp-sidebar nav button:hover,.sp-sidebar-bottom button:hover {
           background:#172944;
           color:white;
         }
@@ -1289,7 +1169,6 @@ function App() {
           border-radius:7px;
           margin:0 0 10px 8px;
         }
-
         .sp-main { min-width:0; flex:1; }
         .sp-topbar {
           height:75px;
@@ -1314,11 +1193,7 @@ function App() {
           color:var(--muted);
           font-size:12px;
         }
-        .sp-content {
-          padding:32px;
-          max-width:1450px;
-          margin:auto;
-        }
+        .sp-content { padding:32px; max-width:1450px; margin:auto; }
         .sp-page-title {
           display:flex;
           align-items:center;
@@ -1332,16 +1207,8 @@ function App() {
           letter-spacing:2px;
           color:var(--gold);
         }
-        .sp-page-title h1 {
-          font-size:32px;
-          margin:7px 0;
-          color:white;
-        }
-        .sp-page-title p {
-          margin:0;
-          color:var(--muted);
-          font-size:13px;
-        }
+        .sp-page-title h1 { font-size:32px; margin:7px 0; color:white; }
+        .sp-page-title p { margin:0; color:var(--muted); font-size:13px; }
         .sp-primary {
           border:1px solid #f1d58d;
           background:linear-gradient(135deg,#f1d58d,#bd903c);
@@ -1357,7 +1224,6 @@ function App() {
         }
         .sp-primary:hover { filter:brightness(1.08); }
         .sp-primary:disabled { opacity:.6; cursor:not-allowed; }
-
         .sp-tournament-stats {
           display:grid;
           grid-template-columns:repeat(5,minmax(0,1fr));
@@ -1397,7 +1263,6 @@ function App() {
         .sp-stat.silver svg { color:#b4c4d9; }
         .sp-stat.red svg { color:#ff8188; }
         .sp-stat.gold svg { color:var(--gold2); }
-
         .sp-toolbar {
           display:flex;
           align-items:center;
@@ -1427,7 +1292,6 @@ function App() {
           outline:0;
           padding:12px 0!important;
         }
-
         .sp-tournament-list {
           display:grid;
           grid-template-columns:repeat(2,minmax(0,1fr));
@@ -1466,11 +1330,7 @@ function App() {
           color:var(--muted);
           font-size:11px;
         }
-        .sp-tournament-meta span {
-          display:flex;
-          align-items:center;
-          gap:7px;
-        }
+        .sp-tournament-meta span { display:flex; align-items:center; gap:7px; }
         .sp-tournament-meta svg { color:var(--gold); }
         .sp-tournament-card-bottom {
           display:flex;
@@ -1495,7 +1355,6 @@ function App() {
           text-decoration:none;
         }
         .sp-outline:hover { background:rgba(217,180,92,.16); }
-
         .sp-overview-grid {
           display:grid;
           grid-template-columns:repeat(3,1fr);
@@ -1521,11 +1380,7 @@ function App() {
           padding:13px 0;
           border-top:1px solid var(--line);
         }
-        .sp-list-row span {
-          margin-left:auto;
-          color:var(--gold);
-          font-size:12px;
-        }
+        .sp-list-row span { margin-left:auto; color:var(--gold); font-size:12px; }
         .sp-add-form { display:flex; gap:10px; margin:20px 0; }
         .sp-add-form input { flex:1; }
         .sp-player-row { min-height:65px; }
@@ -1543,12 +1398,7 @@ function App() {
         .sp-player-info small { color:var(--muted); }
         .sp-active { color:#61dba4; font-size:11px; }
         .sp-inactive { color:#f28b91; font-size:11px; }
-        .sp-icon-btn {
-          border:0;
-          background:transparent;
-          color:var(--gold2);
-          padding:7px;
-        }
+        .sp-icon-btn { border:0; background:transparent; color:var(--gold2); padding:7px; }
         .sp-empty { color:var(--muted); text-align:center; padding:35px; }
         .sp-empty-panel {
           color:var(--muted);
@@ -1558,7 +1408,6 @@ function App() {
           border:1px dashed rgba(217,180,92,.25);
           border-radius:14px;
         }
-
         .sp-public-link {
           display:flex;
           justify-content:space-between;
@@ -1571,21 +1420,9 @@ function App() {
           border-radius:14px;
         }
         .sp-public-link strong { color:var(--gold2); }
-        .sp-public-link p {
-          color:var(--muted);
-          font-size:12px;
-          margin:6px 0 12px;
-        }
-        .sp-public-link input {
-          max-width:600px;
-          color:#dce5f2;
-        }
-        .sp-link-actions {
-          display:flex;
-          flex-wrap:wrap;
-          gap:9px;
-        }
-
+        .sp-public-link p { color:var(--muted); font-size:12px; margin:6px 0 12px; }
+        .sp-public-link input { max-width:600px; color:#dce5f2; }
+        .sp-link-actions { display:flex; flex-wrap:wrap; gap:9px; }
         input,select {
           width:100%;
           border:1px solid rgba(217,180,92,.24);
@@ -1625,23 +1462,10 @@ function App() {
           gap:15px;
           box-shadow:0 25px 80px #0009;
         }
-        .sp-modal-head {
-          display:flex;
-          justify-content:space-between;
-          align-items:center;
-        }
+        .sp-modal-head { display:flex; justify-content:space-between; align-items:center; }
         .sp-modal-head h2 { margin:5px 0 0; }
-        .sp-form-grid {
-          display:grid;
-          grid-template-columns:1fr 1fr;
-          gap:13px;
-        }
-        .sp-modal-actions {
-          display:flex;
-          justify-content:flex-end;
-          gap:10px;
-          margin-top:8px;
-        }
+        .sp-form-grid { display:grid; grid-template-columns:1fr 1fr; gap:13px; }
+        .sp-modal-actions { display:flex; justify-content:flex-end; gap:10px; margin-top:8px; }
         .sp-message {
           padding:12px 15px;
           border:1px solid rgba(217,180,92,.3);
@@ -1653,12 +1477,7 @@ function App() {
           justify-content:space-between;
           gap:12px;
         }
-        .sp-message button {
-          border:0;
-          background:none;
-          color:var(--gold2);
-        }
-
+        .sp-message button { border:0; background:none; color:var(--gold2); }
         .sp-auth {
           min-height:100vh;
           background:radial-gradient(ellipse at 50% 0%,#1b3150,#0b1425 65%);
@@ -1676,21 +1495,21 @@ function App() {
           gap:13px;
           box-shadow:0 25px 80px #0006;
         }
-        .sp-logo {
-          font-size:28px;
-          font-weight:950;
-          letter-spacing:2px;
-        }
+        .sp-logo { font-size:28px; font-weight:950; letter-spacing:2px; }
         .sp-logo span { color:var(--gold); }
         .sp-auth-card h1 { margin:5px 0; }
         .sp-auth-card label { margin-top:6px; }
-        .sp-link {
-          background:none;
-          border:0;
-          color:var(--gold2);
-          padding:10px;
-        }
+        .sp-link { background:none; border:0; color:var(--gold2); padding:10px; }
         .sp-error { color:#ff999f; font-size:12px; }
+        .sp-invite-notice {
+          padding:12px;
+          border:1px solid rgba(217,180,92,.3);
+          border-radius:10px;
+          background:#172944;
+          color:var(--gold2);
+          font-size:12px;
+          line-height:1.5;
+        }
         .sp-loading {
           min-height:100vh;
           background:var(--navy);
@@ -1708,12 +1527,7 @@ function App() {
           animation:sp-spin .8s linear infinite;
         }
         @keyframes sp-spin { to { transform:rotate(360deg); } }
-        .sp-menu {
-          display:none;
-          background:none;
-          border:0;
-          color:var(--gold);
-        }
+        .sp-menu { display:none; background:none; border:0; color:var(--gold); }
 
         @media(max-width:1000px) {
           .sp-tournament-stats { grid-template-columns:repeat(3,1fr); }
@@ -1731,15 +1545,9 @@ function App() {
           .sp-topbar { padding:0 15px; gap:12px; }
           .sp-user span { display:none; }
           .sp-content { padding:20px 14px; }
-          .sp-page-title {
-            align-items:flex-start;
-            flex-direction:column;
-          }
+          .sp-page-title { align-items:flex-start; flex-direction:column; }
           .sp-tournament-title .sp-primary { width:100%; }
-          .sp-tournament-stats {
-            grid-template-columns:repeat(2,minmax(0,1fr));
-            gap:9px;
-          }
+          .sp-tournament-stats { grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; }
           .sp-stat { min-height:110px; padding:13px; }
           .sp-stat strong { font-size:25px; }
           .sp-stat span { font-size:11px; }
@@ -1750,10 +1558,7 @@ function App() {
           .sp-toolbar { align-items:flex-start; }
           .sp-tournament-meta { grid-template-columns:1fr 1fr; }
           .sp-tournament-card { padding:16px; }
-          .sp-public-link {
-            flex-direction:column;
-            align-items:stretch;
-          }
+          .sp-public-link { flex-direction:column; align-items:stretch; }
           .sp-link-actions { flex-direction:column; }
           .sp-link-actions>* { justify-content:center; }
         }
