@@ -1,9 +1,10 @@
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   Activity, Bell, CalendarDays, ChevronRight,
-  CircleUserRound, Club, LayoutDashboard, LogOut, Menu, Settings, ShieldCheck,
-  Target, Trophy, Users, X
+  CircleUserRound, Club, LayoutDashboard, LogOut, Menu, Settings,
+  ShieldCheck, Target, Trophy, Users, X, Search, Plus,
+  Pencil, UserCheck, UserX, Save, RefreshCw
 } from 'lucide-react';
 import { supabase, supabaseConfigured } from './supabase.js';
 
@@ -21,7 +22,11 @@ export default function App() {
   const [active, setActive] = useState('Prehľad');
   const [session, setSession] = useState(null);
   const [club, setClub] = useState('Sibírka');
-  const [counts, setCounts] = useState({ players: '—', tournaments: '—', matches: '—' });
+  const [clubId, setClubId] = useState(null);
+  const [role, setRole] = useState('');
+  const [counts, setCounts] = useState({
+    players: '—', tournaments: '—', matches: '—'
+  });
   const [menu, setMenu] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -30,53 +35,129 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [register, setRegister] = useState(false);
 
+  const [playerRows, setPlayerRows] = useState([]);
+  const [playersLoading, setPlayersLoading] = useState(false);
+  const [playersError, setPlayersError] = useState('');
+  const [playerSearch, setPlayerSearch] = useState('');
+  const [editingPlayer, setEditingPlayer] = useState(null);
+  const [playerName, setPlayerName] = useState('');
+  const [playerNickname, setPlayerNickname] = useState('');
+  const [savingPlayer, setSavingPlayer] = useState(false);
+  const [playerMessage, setPlayerMessage] = useState('');
+
+  const canManagePlayers = ['owner', 'admin'].includes(
+    String(role || '').toLowerCase()
+  );
+
   useEffect(() => {
     if (!supabaseConfigured) return;
-    supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data } = supabase.auth.onAuthStateChange((_, s) => setSession(s));
+
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+    });
+
+    const { data } = supabase.auth.onAuthStateChange((_, s) => {
+      setSession(s);
+    });
+
     return () => data.subscription.unsubscribe();
   }, []);
 
+  const loadPlayers = useCallback(async () => {
+    if (!clubId || !supabase) return;
+
+    setPlayersLoading(true);
+    setPlayersError('');
+
+    const { data, error } = await supabase
+      .from('players')
+      .select('id, club_id, name, nickname, active')
+      .eq('club_id', clubId)
+      .order('name', { ascending: true });
+
+    if (error) {
+      setPlayersError(error.message);
+      setPlayerRows([]);
+    } else {
+      setPlayerRows(data || []);
+    }
+
+    setPlayersLoading(false);
+  }, [clubId]);
+
   useEffect(() => {
-    async function load() {
+    async function loadClub() {
       if (!session?.user || !supabase) return;
-      const { data } = await supabase
+
+      const { data, error } = await supabase
         .from('club_members')
-        .select('club_id, clubs(name)')
+        .select('club_id, role, clubs(name)')
         .eq('user_id', session.user.id)
         .limit(1)
         .maybeSingle();
 
-      if (!data) return;
+      if (error || !data) {
+        setClubId(null);
+        return;
+      }
+
+      setClubId(data.club_id);
       setClub(data.clubs?.name || 'Môj klub');
+      setRole(data.role || '');
+
       const id = data.club_id;
+
       const [p, t, m] = await Promise.all([
-        supabase.from('players').select('id', { count: 'exact', head: true }).eq('club_id', id),
-        supabase.from('tournaments').select('id', { count: 'exact', head: true }).eq('club_id', id),
-        supabase.from('matches').select('id', { count: 'exact', head: true }).eq('club_id', id)
+        supabase.from('players')
+          .select('id', { count: 'exact', head: true })
+          .eq('club_id', id),
+        supabase.from('tournaments')
+          .select('id', { count: 'exact', head: true })
+          .eq('club_id', id),
+        supabase.from('matches')
+          .select('id', { count: 'exact', head: true })
+          .eq('club_id', id)
       ]);
+
       setCounts({
         players: p.count ?? '—',
         tournaments: t.count ?? '—',
         matches: m.count ?? '—'
       });
     }
-    load();
+
+    loadClub();
   }, [session]);
+
+  useEffect(() => {
+    if (active === 'Hráči' && clubId) {
+      loadPlayers();
+    }
+  }, [active, clubId, loadPlayers]);
 
   async function authenticate(e) {
     e.preventDefault();
     setBusy(true);
     setError('');
     setMessage('');
+
     try {
-      if (!supabaseConfigured) throw new Error('Supabase ešte nie je nakonfigurovaný.');
+      if (!supabaseConfigured) {
+        throw new Error('Supabase ešte nie je nakonfigurovaný.');
+      }
+
       if (register) {
-        const { data, error } = await supabase.auth.signUp({ email, password });
+        const { data, error } = await supabase.auth.signUp({
+          email, password
+        });
         if (error) throw error;
-        setMessage(data.session ? 'Účet bol vytvorený.' : 'Skontroluj e-mail a potvrď registráciu.');
+        setMessage(data.session
+          ? 'Účet bol vytvorený.'
+          : 'Skontroluj e-mail a potvrď registráciu.');
       } else {
-        const { error } = await supabase.auth.signInWithPassword({ email, password });
+        const { error } = await supabase.auth.signInWithPassword({
+          email, password
+        });
         if (error) throw error;
       }
     } catch (err) {
@@ -86,110 +167,455 @@ export default function App() {
     }
   }
 
+  function openNewPlayer() {
+    setEditingPlayer(null);
+    setPlayerName('');
+    setPlayerNickname('');
+    setPlayerMessage('');
+  }
+
+  function openEditPlayer(player) {
+    setEditingPlayer(player);
+    setPlayerName(player.name || '');
+    setPlayerNickname(player.nickname || '');
+    setPlayerMessage('');
+  }
+
+  async function savePlayer(e) {
+    e.preventDefault();
+
+    if (!canManagePlayers) {
+      setPlayerMessage('Na túto operáciu nemáš oprávnenie.');
+      return;
+    }
+
+    if (!playerName.trim() || !clubId) return;
+
+    setSavingPlayer(true);
+    setPlayerMessage('');
+
+    const values = {
+      name: playerName.trim(),
+      nickname: playerNickname.trim() || null
+    };
+
+    let result;
+
+    if (editingPlayer) {
+      result = await supabase
+        .from('players')
+        .update(values)
+        .eq('id', editingPlayer.id)
+        .eq('club_id', clubId);
+    } else {
+      result = await supabase
+        .from('players')
+        .insert({
+          ...values,
+          club_id: clubId,
+          active: true
+        });
+    }
+
+    if (result.error) {
+      setPlayerMessage('Chyba: ' + result.error.message);
+    } else {
+      setPlayerMessage(
+        editingPlayer ? 'Údaje hráča boli uložené.' : 'Hráč bol pridaný.'
+      );
+      setEditingPlayer(null);
+      setPlayerName('');
+      setPlayerNickname('');
+      await loadPlayers();
+
+      const { count } = await supabase
+        .from('players')
+        .select('id', { count: 'exact', head: true })
+        .eq('club_id', clubId);
+
+      setCounts(prev => ({ ...prev, players: count ?? prev.players }));
+    }
+
+    setSavingPlayer(false);
+  }
+
+  async function togglePlayer(player) {
+    if (!canManagePlayers) return;
+
+    const { error } = await supabase
+      .from('players')
+      .update({ active: !player.active })
+      .eq('id', player.id)
+      .eq('club_id', clubId);
+
+    if (error) {
+      setPlayersError(error.message);
+    } else {
+      await loadPlayers();
+    }
+  }
+
+  async function logout() {
+    await supabase.auth.signOut();
+    setActive('Prehľad');
+    setPlayerRows([]);
+    setClubId(null);
+    setRole('');
+  }
+
   if (!session) return (
     <div className="auth-screen">
       <div className="auth-card">
         <div className="auth-brand">
           <div className="brand-mark"><Target /></div>
-          <div><strong>ŠIPKY <span>PRO</span></strong><small>KLUBOVÁ PLATFORMA</small></div>
+          <div>
+            <strong>ŠIPKY <span>PRO</span></strong>
+            <small>KLUBOVÁ PLATFORMA</small>
+          </div>
         </div>
+
         <div className="eyebrow">VSTUP DO PLATFORMY</div>
         <h1>{register ? 'Vytvorenie účtu' : 'Prihlásenie'}</h1>
         <p className="auth-intro">Vitaj v systéme Šipky Pro.</p>
+
         <form className="auth-form" onSubmit={authenticate}>
           <label>E-mail</label>
-          <input type="email" required value={email} onChange={e => setEmail(e.target.value)} />
+          <input
+            type="email"
+            required
+            value={email}
+            onChange={e => setEmail(e.target.value)}
+          />
           <label>Heslo</label>
-          <input type="password" required minLength="6" value={password} onChange={e => setPassword(e.target.value)} />
+          <input
+            type="password"
+            required
+            minLength="6"
+            value={password}
+            onChange={e => setPassword(e.target.value)}
+          />
           <button className="auth-submit" disabled={busy}>
             {busy ? 'Pracujem…' : register ? 'Vytvoriť účet' : 'Prihlásiť sa'}
           </button>
         </form>
+
         {error && <div className="auth-alert error">{error}</div>}
         {message && <div className="auth-alert success">{message}</div>}
-        <button className="auth-switch" onClick={() => setRegister(!register)}>
-          {register ? 'Už mám účet – prihlásiť sa' : 'Nemám účet – registrácia'}
+
+        <button
+          className="auth-switch"
+          onClick={() => setRegister(!register)}
+        >
+          {register
+            ? 'Už mám účet – prihlásiť sa'
+            : 'Nemám účet – registrácia'}
         </button>
       </div>
     </div>
   );
+
+  const filteredPlayers = playerRows.filter(player => {
+    const term = playerSearch.toLowerCase().trim();
+    return !term ||
+      (player.name || '').toLowerCase().includes(term) ||
+      (player.nickname || '').toLowerCase().includes(term);
+  });
 
   return (
     <div className="app-shell">
       <aside className={`sidebar ${menu ? 'open' : ''}`}>
         <div className="brand">
           <div className="brand-mark"><Target /></div>
-          <div><strong>ŠIPKY <span>PRO</span></strong><small>KLUBOVÁ PLATFORMA</small></div>
-          <button className="mobile-close" onClick={() => setMenu(false)}><X /></button>
+          <div>
+            <strong>ŠIPKY <span>PRO</span></strong>
+            <small>KLUBOVÁ PLATFORMA</small>
+          </div>
+          <button className="mobile-close" onClick={() => setMenu(false)}>
+            <X />
+          </button>
         </div>
+
         <div className="club-switch">
           <div className="club-avatar"><Club /></div>
-          <div className="club-meta"><small>AKTUÁLNY KLUB</small><strong>{club}</strong></div>
+          <div className="club-meta">
+            <small>AKTUÁLNY KLUB</small>
+            <strong>{club}</strong>
+          </div>
           <ChevronRight />
         </div>
+
         <div className="nav-label">MENU</div>
         <nav>
           {navigation.map(([label, Icon]) => (
-            <button key={label}
+            <button
+              key={label}
               className={`nav-item ${active === label ? 'selected' : ''}`}
-              onClick={() => { setActive(label); setMenu(false); }}>
-              <Icon size={18} /><span>{label}</span>
+              onClick={() => {
+                setActive(label);
+                setMenu(false);
+              }}
+            >
+              <Icon size={18} />
+              <span>{label}</span>
             </button>
           ))}
         </nav>
+
         <div className="sidebar-bottom">
           <div className="online"><span /> Systém pripravený</div>
           <div className="user-card">
             <div className="user-avatar"><CircleUserRound /></div>
-            <div className="user-info"><strong>{session.user.email}</strong><small>Prihlásený používateľ</small></div>
-            <button className="icon-button" onClick={() => supabase.auth.signOut()}><LogOut size={16} /></button>
+            <div className="user-info">
+              <strong>{session.user.email}</strong>
+              <small>{role || 'Prihlásený používateľ'}</small>
+            </div>
+            <button className="icon-button" onClick={logout}>
+              <LogOut size={16} />
+            </button>
           </div>
         </div>
       </aside>
+
       {menu && <button className="scrim" onClick={() => setMenu(false)} />}
+
       <main className="main">
         <header className="topbar">
-          <button className="menu-button" onClick={() => setMenu(true)}><Menu /></button>
-          <div className="crumb">Klub <ChevronRight size={14} /> <strong>{active}</strong></div>
+          <button className="menu-button" onClick={() => setMenu(true)}>
+            <Menu />
+          </button>
+          <div className="crumb">
+            Klub <ChevronRight size={14} /> <strong>{active}</strong>
+          </div>
           <div className="top-actions">
-            <span className="date"><CalendarDays size={15} /> Klubový panel</span>
+            <span className="date">
+              <CalendarDays size={15} /> Klubový panel
+            </span>
             <button className="icon-button"><Bell /></button>
           </div>
         </header>
-        <div className="content">
-          <div className="welcome-row">
-            <div>
-              <div className="eyebrow">KLUBOVÝ PANEL</div>
-              <h1>{active === 'Prehľad' ? 'Dobrý deň!' : active}</h1>
-              <p>Vitaj v systéme Šipky Pro. Klub <b>{club}</b>.</p>
-            </div>
-            <div className="welcome-mark"><Target size={42} /></div>
-          </div>
 
-          <div className="notice"><span className="notice-dot" /> Klubové rozhranie Šípky Pro</div>
-          <section className="stats-grid">
-            <Stat icon={<Users />} label="Registrovaní hráči" value={counts.players} />
-            <Stat icon={<Trophy />} label="Turnaje" value={counts.tournaments} />
-            <Stat icon={<Target />} label="Zápasy" value={counts.matches} />
-            <Stat icon={<Activity />} label="Aktivita klubu" value="—" />
-          </section>
-          <section className="panel-grid">
-            <div className="panel main-panel">
-              <div className="eyebrow">RÝCHLY PRÍSTUP</div>
-              <h2>Čo chceš robiť?</h2>
-              <div className="quick-grid">
-                <Quick icon={<Users />} title="Správa hráčov" onClick={() => setActive('Hráči')} />
-                <Quick icon={<Trophy />} title="Nový turnaj" onClick={() => setActive('Turnaje')} />
-                <Quick icon={<Target />} title="Zápasy" onClick={() => setActive('Zápasy')} />
-                <Quick icon={<Activity />} title="Štatistiky" onClick={() => setActive('Štatistiky')} />
+        <div className="content">
+          {active === 'Hráči' ? (
+            <>
+              <div className="welcome-row">
+                <div>
+                  <div className="eyebrow">SPRÁVA KLUBU</div>
+                  <h1>Hráči</h1>
+                  <p>Správa hráčov klubu <b>{club}</b>.</p>
+                </div>
+                <div className="welcome-mark"><Users size={42} /></div>
               </div>
-            </div>
-            <div className="panel side-panel">
-              <div className="eyebrow">VÝVOJ PLATFORMY</div>
-              <h2>Budujeme Šipky Pro</h2>
-              <p>Klubové rozhranie je základom novej platformy.</p>
-            </div>
-          </section>
+
+              <div className="player-summary">
+                <div>
+                  <span>CELKOVÝ POČET HRÁČOV</span>
+                  <strong>{playerRows.length}</strong>
+                </div>
+                <div>
+                  <span>AKTÍVNI HRÁČI</span>
+                  <strong>{playerRows.filter(p => p.active).length}</strong>
+                </div>
+                <div>
+                  <span>NEAKTÍVNI HRÁČI</span>
+                  <strong>{playerRows.filter(p => !p.active).length}</strong>
+                </div>
+              </div>
+
+              <section className="panel players-panel">
+                <div className="players-toolbar">
+                  <div>
+                    <div className="eyebrow">ČLENSKÁ ZÁKLADŇA</div>
+                    <h2>Zoznam hráčov</h2>
+                  </div>
+                  {canManagePlayers && (
+                    <button className="player-primary" onClick={openNewPlayer}>
+                      <Plus size={17} /> Pridať hráča
+                    </button>
+                  )}
+                </div>
+
+                <div className="player-search">
+                  <Search size={18} />
+                  <input
+                    placeholder="Vyhľadať hráča alebo prezývku..."
+                    value={playerSearch}
+                    onChange={e => setPlayerSearch(e.target.value)}
+                  />
+                  <button
+                    className="icon-button"
+                    title="Obnoviť zoznam"
+                    onClick={loadPlayers}
+                  >
+                    <RefreshCw size={16} />
+                  </button>
+                </div>
+
+                {playersError && (
+                  <div className="player-alert error">{playersError}</div>
+                )}
+
+                {playerMessage && (
+                  <div className="player-alert">{playerMessage}</div>
+                )}
+
+                {playersLoading ? (
+                  <div className="player-empty">Načítavam hráčov...</div>
+                ) : filteredPlayers.length === 0 ? (
+                  <div className="player-empty">
+                    <Users size={30} />
+                    <strong>
+                      {playerRows.length === 0
+                        ? 'Zatiaľ tu nie sú žiadni hráči.'
+                        : 'Nenašli sa žiadni hráči.'}
+                    </strong>
+                    <span>
+                      {playerRows.length === 0
+                        ? 'Hráčov môžeš pridať pomocou tlačidla Pridať hráča.'
+                        : 'Skús zmeniť hľadaný výraz.'}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="players-list">
+                    {filteredPlayers.map(player => (
+                      <div className="player-row" key={player.id}>
+                        <div className="player-avatar">
+                          <CircleUserRound size={21} />
+                        </div>
+                        <div className="player-details">
+                          <strong>{player.name}</strong>
+                          <span>
+                            {player.nickname
+                              ? `Prezývka: ${player.nickname}`
+                              : 'Bez prezývky'}
+                          </span>
+                        </div>
+                        <span className={`player-status ${player.active ? 'active' : 'inactive'}`}>
+                          {player.active ? 'Aktívny' : 'Neaktívny'}
+                        </span>
+                        {canManagePlayers && (
+                          <div className="player-actions">
+                            <button
+                              className="player-action"
+                              title="Upraviť hráča"
+                              onClick={() => openEditPlayer(player)}
+                            >
+                              <Pencil size={16} />
+                            </button>
+                            <button
+                              className="player-action"
+                              title={player.active ? 'Deaktivovať' : 'Aktivovať'}
+                              onClick={() => togglePlayer(player)}
+                            >
+                              {player.active
+                                ? <UserX size={17} />
+                                : <UserCheck size={17} />}
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+
+              {canManagePlayers ? (
+                <section className="panel player-form-panel">
+                  <div className="eyebrow">
+                    {editingPlayer ? 'ÚPRAVA ZÁZNAMU' : 'NOVÝ ZÁZNAM'}
+                  </div>
+                  <h2>{editingPlayer ? 'Upraviť hráča' : 'Pridať nového hráča'}</h2>
+                  <form className="player-form" onSubmit={savePlayer}>
+                    <label>
+                      Meno a priezvisko *
+                      <input
+                        required
+                        maxLength="120"
+                        value={playerName}
+                        onChange={e => setPlayerName(e.target.value)}
+                        placeholder="Zadaj meno hráča"
+                      />
+                    </label>
+                    <label>
+                      Prezývka
+                      <input
+                        maxLength="80"
+                        value={playerNickname}
+                        onChange={e => setPlayerNickname(e.target.value)}
+                        placeholder="Zadaj prezývku (nepovinné)"
+                      />
+                    </label>
+                    <div className="player-form-actions">
+                      <button
+                        type="submit"
+                        className="player-primary"
+                        disabled={savingPlayer}
+                      >
+                        <Save size={16} />
+                        {savingPlayer
+                          ? 'Ukladám...'
+                          : editingPlayer ? 'Uložiť zmeny' : 'Pridať hráča'}
+                      </button>
+                      {(editingPlayer || playerName || playerNickname) && (
+                        <button
+                          type="button"
+                          className="player-secondary"
+                          onClick={openNewPlayer}
+                        >
+                          Zrušiť
+                        </button>
+                      )}
+                    </div>
+                  </form>
+                </section>
+              ) : (
+                <div className="player-readonly">
+                  <ShieldCheck size={17} />
+                  Máš prístup iba na prezeranie hráčov.
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="welcome-row">
+                <div>
+                  <div className="eyebrow">KLUBOVÝ PANEL</div>
+                  <h1>{active === 'Prehľad' ? 'Dobrý deň!' : active}</h1>
+                  <p>Vitaj v systéme Šipky Pro. Klub <b>{club}</b>.</p>
+                </div>
+                <div className="welcome-mark"><Target size={42} /></div>
+              </div>
+
+              <div className="notice">
+                <span className="notice-dot" /> Klubové rozhranie Šípky Pro
+              </div>
+
+              <section className="stats-grid">
+                <Stat icon={<Users />} label="Registrovaní hráči" value={counts.players} />
+                <Stat icon={<Trophy />} label="Turnaje" value={counts.tournaments} />
+                <Stat icon={<Target />} label="Zápasy" value={counts.matches} />
+                <Stat icon={<Activity />} label="Aktivita klubu" value="—" />
+              </section>
+
+              <section className="panel-grid">
+                <div className="panel main-panel">
+                  <div className="eyebrow">RÝCHLY PRÍSTUP</div>
+                  <h2>Čo chceš robiť?</h2>
+                  <div className="quick-grid">
+                    <Quick icon={<Users />} title="Správa hráčov" onClick={() => setActive('Hráči')} />
+                    <Quick icon={<Trophy />} title="Nový turnaj" onClick={() => setActive('Turnaje')} />
+                    <Quick icon={<Target />} title="Zápasy" onClick={() => setActive('Zápasy')} />
+                    <Quick icon={<Activity />} title="Štatistiky" onClick={() => setActive('Štatistiky')} />
+                  </div>
+                </div>
+                <div className="panel side-panel">
+                  <div className="eyebrow">VÝVOJ PLATFORMY</div>
+                  <h2>Budujeme Šipky Pro</h2>
+                  <p>Klubové rozhranie je základom novej platformy.</p>
+                </div>
+              </section>
+            </>
+          )}
+
           <footer>ŠIPKY PRO • Platforma pre šípkarské kluby</footer>
         </div>
       </main>
@@ -198,15 +624,24 @@ export default function App() {
 }
 
 function Stat({ icon, label, value }) {
-  return <div className="stat-card">
-    <div className="stat-top"><span className="stat-icon">{icon}</span><span className="stat-trend">KLUB</span></div>
-    <div className="stat-value">{value}</div>
-    <div className="stat-label">{label}</div>
-  </div>;
+  return (
+    <div className="stat-card">
+      <div className="stat-top">
+        <span className="stat-icon">{icon}</span>
+        <span className="stat-trend">KLUB</span>
+      </div>
+      <div className="stat-value">{value}</div>
+      <div className="stat-label">{label}</div>
+    </div>
+  );
 }
 
 function Quick({ icon, title, onClick }) {
-  return <button className="quick-card" onClick={onClick}>
-    <span className="quick-icon">{icon}</span><strong>{title}</strong><ChevronRight />
-  </button>;
+  return (
+    <button className="quick-card" onClick={onClick}>
+      <span className="quick-icon">{icon}</span>
+      <strong>{title}</strong>
+      <ChevronRight />
+    </button>
+  );
 }
