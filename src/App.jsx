@@ -2,10 +2,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { supabase, supabaseConfigured } from './supabase';
 import LiveScore from './LiveScore';
+import PublicMatch from './PublicMatch';
 import {
   LayoutDashboard, Users, Trophy, Target, BarChart3, Settings,
   LogOut, Plus, Search, CalendarDays, MapPin, Pencil,
-  X, Menu, Shield, UserRound, CheckCircle2
+  X, Menu, Shield, UserRound, CheckCircle2, Copy, ExternalLink
 } from 'lucide-react';
 
 const NAV = [
@@ -40,6 +41,9 @@ const emptyTournament = {
 };
 
 function App() {
+  // Verejné sledovanie zápasu cez URL ?watch=TOKEN
+  const watchToken = new URLSearchParams(window.location.search).get('watch');
+
   const [session, setSession] = useState(null);
   const [loading, setLoading] = useState(true);
   const [authMode, setAuthMode] = useState('login');
@@ -68,6 +72,9 @@ function App() {
   const [matchPlayer1, setMatchPlayer1] = useState('');
   const [matchPlayer2, setMatchPlayer2] = useState('');
   const [matchStarted, setMatchStarted] = useState(false);
+  const [liveMatchId, setLiveMatchId] = useState(null);
+  const [publicMatchUrl, setPublicMatchUrl] = useState('');
+  const [startingMatch, setStartingMatch] = useState(false);
 
   const canManagePlayers = ['owner', 'admin'].includes(role);
   const canManageTournaments = ['owner', 'admin', 'organizer'].includes(role);
@@ -181,6 +188,8 @@ function App() {
     await supabase.auth.signOut();
     setPage('Prehľad');
     setMatchStarted(false);
+    setLiveMatchId(null);
+    setPublicMatchUrl('');
   }
 
   async function addPlayer(event) {
@@ -272,6 +281,107 @@ function App() {
     setBusy(false);
   }
 
+  // Vytvorenie zápasu a verejného odkazu pre divákov
+  async function startLiveMatch() {
+    if (!club || !matchPlayer1 || !matchPlayer2) return;
+
+    if (matchPlayer1 === matchPlayer2) {
+      setMessage('Jeden hráč nemôže hrať sám proti sebe.');
+      return;
+    }
+
+    setStartingMatch(true);
+    setMessage('');
+    setPublicMatchUrl('');
+
+    try {
+      const { data: match, error: matchError } = await supabase
+        .from('matches')
+        .insert({
+          club_id: club.id,
+          player1_id: matchPlayer1,
+          player2_id: matchPlayer2,
+          score1: 501,
+          score2: 501,
+          live_remaining1: 501,
+          live_remaining2: 501,
+          live_current_player: 1,
+          live_legs1: 0,
+          live_legs2: 0,
+          live_status: 'playing',
+          live_legs_to_win: 3,
+          status: 'ongoing',
+        })
+        .select('id')
+        .single();
+
+      if (matchError) throw matchError;
+      if (!match?.id) throw new Error('Databáza nevrátila ID zápasu.');
+
+      setLiveMatchId(match.id);
+
+      const expiresAt = new Date(
+        Date.now() + 24 * 60 * 60 * 1000
+      ).toISOString();
+
+      const { data: linkData, error: linkError } = await supabase.rpc(
+        'sp_create_match_public_link',
+        {
+          p_match_id: match.id,
+          p_expires_at: expiresAt,
+        }
+      );
+
+      if (linkError) {
+        throw new Error(
+          'Zápas sa vytvoril, ale verejný odkaz sa nepodarilo vytvoriť: ' +
+          linkError.message
+        );
+      }
+
+      const linkResult = Array.isArray(linkData) ? linkData[0] : linkData;
+      const token =
+        linkResult?.token ||
+        linkResult?.public_token ||
+        linkResult?.data?.token;
+
+      if (!token) {
+        throw new Error(
+          'Zápas sa vytvoril, ale odpoveď databázy neobsahuje token odkazu.'
+        );
+      }
+
+      const url = new URL(window.location.href);
+      url.search = '';
+      url.searchParams.set('watch', token);
+
+      setPublicMatchUrl(url.toString());
+      setMatchStarted(true);
+      setMessage('Zápas bol vytvorený. Môžeš spustiť skórovanie.');
+    } catch (error) {
+      setMessage('Zápas sa nepodarilo správne spustiť: ' + error.message);
+    } finally {
+      setStartingMatch(false);
+    }
+  }
+
+  async function copyPublicLink() {
+    if (!publicMatchUrl) return;
+
+    try {
+      await navigator.clipboard.writeText(publicMatchUrl);
+      setMessage('Verejný odkaz bol skopírovaný.');
+    } catch {
+      setMessage('Odkaz sa nepodarilo skopírovať. Označ ho a skopíruj ručne.');
+    }
+  }
+
+  function leaveLiveMatch() {
+    setMatchStarted(false);
+    setLiveMatchId(null);
+    setPublicMatchUrl('');
+  }
+
   const tournamentStats = useMemo(() => STATUS.map(item => ({
     ...item,
     count: item.id === 'all'
@@ -319,6 +429,12 @@ function App() {
         <p>Chýba konfigurácia Supabase.</p>
       </div>
     );
+  }
+
+  // Verejná stránka sa zobrazí aj neprihláseným návštevníkom.
+  // Tento návrat je až po všetkých hookoch, aby React zachoval ich poradie.
+  if (watchToken) {
+    return <PublicMatch token={watchToken} />;
   }
 
   if (loading) {
@@ -733,13 +849,15 @@ function App() {
                       className="sp-primary"
                       style={{ marginTop: 20 }}
                       disabled={
+                        startingMatch ||
                         !matchPlayer1 ||
                         !matchPlayer2 ||
                         matchPlayer1 === matchPlayer2
                       }
-                      onClick={() => setMatchStarted(true)}
+                      onClick={startLiveMatch}
                     >
-                      <Target size={18} /> Spustiť zápas
+                      <Target size={18} />
+                      {startingMatch ? 'Vytváram zápas…' : 'Vytvoriť a spustiť zápas'}
                     </button>
 
                     {activePlayers.length < 2 && (
@@ -754,17 +872,45 @@ function App() {
                   <button
                     className="sp-outline"
                     style={{ marginBottom: 15 }}
-                    onClick={() => setMatchStarted(false)}
+                    onClick={leaveLiveMatch}
                   >
                     ← Späť na zápasy
                   </button>
 
+                  {publicMatchUrl && (
+                    <div className="sp-public-link">
+                      <div>
+                        <strong>Verejný odkaz pre divákov</strong>
+                        <p>Pošli tento odkaz ľuďom, ktorí chcú sledovať zápas online.</p>
+                        <input
+                          readOnly
+                          value={publicMatchUrl}
+                          onFocus={e => e.target.select()}
+                        />
+                      </div>
+                      <div className="sp-link-actions">
+                        <button className="sp-primary" onClick={copyPublicLink}>
+                          <Copy size={16} /> Kopírovať odkaz
+                        </button>
+                        <a
+                          className="sp-outline"
+                          href={publicMatchUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          <ExternalLink size={16} /> Otvoriť
+                        </a>
+                      </div>
+                    </div>
+                  )}
+
                   <LiveScore
+                    matchId={liveMatchId}
                     player1={players.find(p => p.id === matchPlayer1)?.name || 'Hráč 1'}
                     player2={players.find(p => p.id === matchPlayer2)?.name || 'Hráč 2'}
                     onFinish={result => {
                       setMessage(
-                        `Výsledok zápasu: ${result.legs[0]} : ${result.legs[1]}. Zatiaľ nie je uložený do databázy.`
+                        `Výsledok zápasu: ${result.legs[0]} : ${result.legs[1]}.`
                       );
                       setMatchStarted(false);
                       setPage('Zápasy');
@@ -1148,6 +1294,7 @@ function App() {
           align-items:center;
           justify-content:center;
           gap:8px;
+          text-decoration:none;
         }
         .sp-primary:hover { filter:brightness(1.08); }
         .sp-primary:disabled { opacity:.6; cursor:not-allowed; }
@@ -1286,6 +1433,7 @@ function App() {
           display:inline-flex;
           align-items:center;
           gap:7px;
+          text-decoration:none;
         }
         .sp-outline:hover { background:rgba(217,180,92,.16); }
 
@@ -1350,6 +1498,33 @@ function App() {
           grid-column:1/-1;
           border:1px dashed rgba(217,180,92,.25);
           border-radius:14px;
+        }
+
+        .sp-public-link {
+          display:flex;
+          justify-content:space-between;
+          align-items:center;
+          gap:18px;
+          padding:18px;
+          margin-bottom:20px;
+          background:#111f35;
+          border:1px solid rgba(217,180,92,.3);
+          border-radius:14px;
+        }
+        .sp-public-link strong { color:var(--gold2); }
+        .sp-public-link p {
+          color:var(--muted);
+          font-size:12px;
+          margin:6px 0 12px;
+        }
+        .sp-public-link input {
+          max-width:600px;
+          color:#dce5f2;
+        }
+        .sp-link-actions {
+          display:flex;
+          flex-wrap:wrap;
+          gap:9px;
         }
 
         input,select {
@@ -1417,6 +1592,7 @@ function App() {
           margin-bottom:18px;
           display:flex;
           justify-content:space-between;
+          gap:12px;
         }
         .sp-message button {
           border:0;
@@ -1515,6 +1691,12 @@ function App() {
           .sp-toolbar { align-items:flex-start; }
           .sp-tournament-meta { grid-template-columns:1fr 1fr; }
           .sp-tournament-card { padding:16px; }
+          .sp-public-link {
+            flex-direction:column;
+            align-items:stretch;
+          }
+          .sp-link-actions { flex-direction:column; }
+          .sp-link-actions>* { justify-content:center; }
         }
       `}</style>
     </div>
