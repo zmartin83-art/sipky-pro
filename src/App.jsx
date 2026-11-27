@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Activity, Bell, CalendarDays, ChevronRight, CircleUserRound,
+  Activity, Bell, CalendarDays, ChevronRight,
   Club, LayoutDashboard, LogOut, Menu, Settings, ShieldCheck,
   Target, Trophy, Users, X
 } from 'lucide-react';
