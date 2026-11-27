@@ -1,4 +1,5 @@
-import React, { useMemo, useState } from 'react';
+
+import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from './supabase';
 
 const START_SCORE = 501;
@@ -10,7 +11,7 @@ export default function LiveScore({
   onFinish,
   matchId,
 }) {
-  const [scores, setScores] = useState([START_SCORE, START_SCORE]);
+  const [scores, setScores] = useState([501, 501]);
   const [legs, setLegs] = useState([0, 0]);
   const [currentPlayer, setCurrentPlayer] = useState(0);
   const [visitInput, setVisitInput] = useState('');
@@ -18,12 +19,14 @@ export default function LiveScore({
   const [dartsThisVisit, setDartsThisVisit] = useState(3);
   const [dartsUsed, setDartsUsed] = useState([0, 0]);
   const [history, setHistory] = useState([]);
-  const [legHistory, setLegHistory] = useState([]);
-  const [message, setMessage] = useState('');
-  const [bullOff, setBullOff] = useState(false);
-  const [finished, setFinished] = useState(false);
+  const [bullHistory, setBullHistory] = useState([]);
+  const [bullOffPhase, setBullOffPhase] = useState('opening');
+  const [message, setMessage] = useState('Načítavam zápas...');
   const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [undoConfirm, setUndoConfirm] = useState(false);
+  const [finished, setFinished] = useState(false);
+  const [matchCompleted, setMatchCompleted] = useState(false);
 
   const names = [player1, player2];
   const activeName = names[currentPlayer];
@@ -31,25 +34,160 @@ export default function LiveScore({
 
   const averages = useMemo(() => {
     return [0, 1].map((i) => {
-      const playerVisits = history.filter(
+      const visits = history.filter(
         (item) => item.player === i && !item.bullOff
       );
 
-      const thrown = playerVisits.reduce(
-        (sum, item) => sum + item.darts,
-        0
+      const darts = visits.reduce(
+        (sum, item) => sum + (item.darts || 0), 0
       );
 
-      const scored = playerVisits.reduce(
-        (sum, item) => sum + item.scored,
-        0
+      const points = visits.reduce(
+        (sum, item) => sum + (item.bust ? 0 : item.scored), 0
       );
 
-      return thrown
-        ? ((scored / thrown) * 3).toFixed(2)
+      return darts
+        ? ((points / darts) * 3).toFixed(2)
         : '0.00';
     });
   }, [history]);
+
+  function applyDatabaseState(data) {
+    if (!data) return;
+
+    if (
+      Number.isFinite(Number(data.remaining1)) &&
+      Number.isFinite(Number(data.remaining2))
+    ) {
+      setScores([
+        Number(data.remaining1),
+        Number(data.remaining2),
+      ]);
+    }
+
+    if (
+      data.legs1 !== undefined &&
+      data.legs2 !== undefined
+    ) {
+      setLegs([
+        Number(data.legs1),
+        Number(data.legs2),
+      ]);
+    }
+
+    if (data.current_player_slot === 1 ||
+        data.current_player_slot === 2) {
+      setCurrentPlayer(data.current_player_slot - 1);
+    }
+
+    if (data.darts1 !== undefined && data.darts2 !== undefined) {
+      setDartsUsed([
+        Number(data.darts1),
+        Number(data.darts2),
+      ]);
+    }
+
+    if (data.bull_off_phase) {
+      setBullOffPhase(data.bull_off_phase);
+    } else if (data.starting_player == null) {
+      setBullOffPhase('opening');
+    } else {
+      setBullOffPhase(null);
+    }
+
+    if (Array.isArray(data.bull_off_history)) {
+      setBullHistory(data.bull_off_history);
+    }
+
+    if (data.live_status === 'finished') {
+      setMatchCompleted(true);
+    }
+  }
+
+  // Načítanie zápasu a histórie priamo zo Supabase.
+  useEffect(() => {
+    let active = true;
+
+    async function loadMatch() {
+      if (!matchId) {
+        setMessage('Chýba ID zápasu.');
+        setLoading(false);
+        return;
+      }
+
+      try {
+        const { data, error } = await supabase.rpc(
+          'sp_get_match_live_state',
+          { p_match_id: matchId }
+        );
+
+        if (error) throw error;
+        if (!active) return;
+
+        applyDatabaseState(data);
+
+        const p1 = data.player1_id;
+        const p2 = data.player2_id;
+
+        // Podrobná história návštev.
+        const { data: visits, error: historyError } =
+          await supabase
+            .from('match_visits')
+            .select(
+              'visit_number, player_id, visit_score, is_bust, is_checkout, darts_thrown'
+            )
+            .eq('match_id', matchId)
+            .order('visit_number', { ascending: false });
+
+        if (!historyError && active && visits) {
+          const mapped = visits.map((item) => {
+            const player = item.player_id === p1 ? 0 :
+              item.player_id === p2 ? 1 : 0;
+
+            return {
+              player,
+              name: names[player],
+              scored: Number(item.visit_score),
+              entered: Number(item.visit_score),
+              darts: Number(item.darts_thrown || 3),
+              bust: item.is_bust,
+              checkout: item.is_checkout,
+              bullOff: false,
+              leg: 0,
+            };
+          });
+
+          setHistory(mapped);
+        }
+
+        if (data.live_status === 'finished') {
+          setMessage('Zápas je ukončený.');
+        } else if (data.starting_player == null) {
+          setMessage('Najskôr vykonajte úvodný rozstrel.');
+          setBullOffPhase('opening');
+        } else if (data.bull_off_phase === 'final') {
+          setMessage('Obaja hráči vyčerpali 45 šípok. Rozhodne záverečný rozstrel.');
+        } else {
+          setMessage('Stav zápasu bol načítaný.');
+        }
+      } catch (error) {
+        console.error('Načítanie zápasu zlyhalo:', error);
+        if (active) {
+          setMessage(
+            `Zápas sa nepodarilo načítať: ${error.message}`
+          );
+        }
+      } finally {
+        if (active) setLoading(false);
+      }
+    }
+
+    loadMatch();
+
+    return () => {
+      active = false;
+    };
+  }, [matchId]);
 
   function addDigit(value) {
     setVisitInput((old) => (old + String(value)).slice(0, 3));
@@ -61,7 +199,7 @@ export default function LiveScore({
   }
 
   async function recordVisit() {
-    if (saving) return;
+    if (saving || loading || matchCompleted || bullOffPhase) return;
 
     const value = Number(visitInput);
 
@@ -101,223 +239,219 @@ export default function LiveScore({
       bust,
       checkout,
       bullOff: false,
-      leg: legs[0] + legs[1] + 1,
-      // Snapshot na obnovenie počtu šípok po Undo.
       dartsUsedBefore: [...dartsUsed],
-      legHistoryBefore: [...legHistory],
     };
 
-    // Uloženie návštevy do Supabase.
-    if (matchId) {
-      setSaving(true);
-      setMessage('Ukladám návštevu do databázy...');
-
-      try {
-        const { data, error } = await supabase.rpc(
-          'sp_record_match_visit',
-          {
-            p_match_id: matchId,
-            p_visit_score: value,
-            p_double_out: doubleOut,
-          }
-        );
-
-        if (error) throw error;
-
-        if (data && data.success === false) {
-          throw new Error(
-            data.message || 'Databáza odmietla uložiť návštevu.'
-          );
-        }
-      } catch (error) {
-        console.error('Chyba pri ukladaní návštevy:', error);
-        setMessage(
-          `Návštevu sa nepodarilo uložiť: ${error.message || 'Neznáma chyba'}`
-        );
-        return;
-      } finally {
-        setSaving(false);
-      }
-    }
-
-    // Aktualizácia počtu šípok a histórie.
-    const nextDarts = [...dartsUsed];
-    nextDarts[currentPlayer] += darts;
-
-    setDartsUsed(nextDarts);
-    setHistory((old) => [entry, ...old]);
-    setVisitInput('');
-    setDoubleOut(false);
-    setDartsThisVisit(3);
-
-    // Pri BUST zostáva pôvodné skóre.
-    if (!checkout) {
-      const nextScores = [...scores];
-      nextScores[currentPlayer] = bust ? before : after;
-      setScores(nextScores);
-    }
-
-    // Ukončenie legu pri úspešnom double oute.
-    if (checkout) {
-      const nextLegs = [...legs];
-      nextLegs[currentPlayer] += 1;
-
-      setLegs(nextLegs);
-
-      setLegHistory((old) => [
-        ...old,
-        {
-          winner: currentPlayer,
-          legs: nextLegs,
-          history: [entry],
-        },
-      ]);
-
-      setScores([START_SCORE, START_SCORE]);
-      setDartsUsed([0, 0]);
-      setCurrentPlayer(currentPlayer);
-      setMessage(`${activeName} vyhráva leg!`);
-      return;
-    }
-
-    // Kontrola limitu 45 šípok.
-    if (
-      nextDarts[0] >= MAX_DARTS &&
-      nextDarts[1] >= MAX_DARTS
-    ) {
-      setBullOff(true);
-      setMessage(
-        'Obaja hráči vyčerpali 45 šípok. Rozhodne rozstrel na bull.'
-      );
-      return;
-    }
-
-    const other = 1 - currentPlayer;
-
-    if (
-      nextDarts[other] >= MAX_DARTS &&
-      nextDarts[currentPlayer] < MAX_DARTS
-    ) {
-      setCurrentPlayer(currentPlayer);
-      setMessage(
-        'Súper vyčerpal 45 šípok. Dokonči svoje zostávajúce šípky.'
-      );
-    } else if (nextDarts[currentPlayer] >= MAX_DARTS) {
-      if (nextDarts[other] < MAX_DARTS) {
-        setCurrentPlayer(other);
-        setMessage(
-          'Hráč vyčerpal 45 šípok. Pokračuje súper.'
-        );
-      } else {
-        setBullOff(true);
-      }
-    } else {
-      setCurrentPlayer(other);
-      setMessage(
-        bust
-          ? 'BUST – skóre sa vracia späť.'
-          : 'Návšteva zapísaná.'
-      );
-    }
-  }
-
-  // Vrátenie poslednej uloženej návštevy.
-  async function undoLastVisit() {
-    if (saving || !matchId || history.length === 0) return;
-
-    const lastEntry = history[0];
-
-    // Rozstrel na bull sa zámerne nevracia.
-    if (!lastEntry || lastEntry.bullOff) return;
-
     setSaving(true);
-    setMessage('Vraciam poslednú návštevu do databázy...');
+    setMessage('Ukladám návštevu...');
 
     try {
       const { data, error } = await supabase.rpc(
-        'sp_undo_match_visit',
+        'sp_record_match_visit_with_darts',
+        {
+          p_match_id: matchId,
+          p_visit_score: value,
+          p_double_out: doubleOut,
+          p_darts_thrown: darts,
+        }
+      );
+
+      if (error) throw error;
+
+      if (data?.success === false) {
+        throw new Error(data.message || 'Databáza odmietla návštevu.');
+      }
+
+      setHistory((old) => [entry, ...old]);
+      setVisitInput('');
+      setDoubleOut(false);
+      setDartsThisVisit(3);
+
+      applyDatabaseState(data);
+
+      if (data.live_status === 'finished') {
+        setMatchCompleted(true);
+        setMessage(`${activeName} vyhráva zápas!`);
+
+        if (typeof onFinish === 'function') {
+          onFinish({
+            legs: [
+              Number(data.legs1),
+              Number(data.legs2),
+            ],
+            history: [entry, ...history],
+            scores: [
+              Number(data.remaining1),
+              Number(data.remaining2),
+            ],
+            darts: [
+              Number(data.darts1),
+              Number(data.darts2),
+            ],
+            saved: true,
+            databaseResult: data,
+          });
+        }
+
+        return;
+      }
+
+      if (data.bull_off_phase === 'final') {
+        setBullOffPhase('final');
+        setMessage(
+          'Obaja hráči vyčerpali 45 šípok. Rozhodne záverečný rozstrel na bull.'
+        );
+      } else if (checkout) {
+        setMessage(`${activeName} vyhráva leg!`);
+      } else if (bust) {
+        setMessage('BUST – skóre sa vracia späť.');
+      } else {
+        setMessage('Návšteva zapísaná.');
+      }
+    } catch (error) {
+      console.error('Uloženie návštevy zlyhalo:', error);
+      setMessage(
+        `Návštevu sa nepodarilo uložiť: ${error.message}`
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  // Úvodný a záverečný rozstrel.
+  async function recordBullOff(winnerSlot, isTie = false) {
+    if (saving || !bullOffPhase || matchCompleted) return;
+
+    setSaving(true);
+    setMessage('Ukladám výsledok rozstrelu...');
+
+    try {
+      const { data, error } = await supabase.rpc(
+        'sp_record_match_bull_off',
+        {
+          p_match_id: matchId,
+          p_phase: bullOffPhase,
+          p_winner_slot: isTie ? null : winnerSlot + 1,
+          p_is_tie: isTie,
+        }
+      );
+
+      if (error) throw error;
+
+      if (data?.success === false) {
+        throw new Error(data.message || 'Rozstrel sa nepodarilo uložiť.');
+      }
+
+      if (isTie) {
+        setBullHistory((old) => [
+          ...old,
+          {
+            phase: bullOffPhase,
+            is_tie: true,
+            winner_slot: null,
+          },
+        ]);
+
+        setMessage(
+          'Rozstrel je nerozhodný. Hráči musia hádzať znova.'
+        );
+        return;
+      }
+
+      applyDatabaseState(data);
+
+      setBullHistory((old) => [
+        ...old,
+        {
+          phase: bullOffPhase,
+          is_tie: false,
+          winner_slot: winnerSlot + 1,
+        },
+      ]);
+
+      if (bullOffPhase === 'opening') {
+        setBullOffPhase(null);
+        setCurrentPlayer(winnerSlot);
+        setMessage(
+          `${names[winnerSlot]} vyhráva úvodný rozstrel a začína prvý leg.`
+        );
+      } else {
+        setBullOffPhase(null);
+
+        if (data.live_status === 'finished') {
+          setMatchCompleted(true);
+          setMessage(
+            `${names[winnerSlot]} vyhráva zápas rozstrelom na bull!`
+          );
+
+          if (typeof onFinish === 'function') {
+            onFinish({
+              legs: [
+                Number(data.legs1),
+                Number(data.legs2),
+              ],
+              history,
+              scores: [
+                Number(data.remaining1),
+                Number(data.remaining2),
+              ],
+              darts: [
+                Number(data.darts1),
+                Number(data.darts2),
+              ],
+              saved: true,
+              databaseResult: data,
+            });
+          }
+        } else {
+          setMessage(
+            `${names[winnerSlot]} vyhráva leg rozstrelom na bull!`
+          );
+        }
+      }
+    } catch (error) {
+      console.error('Rozstrel zlyhal:', error);
+      setMessage(
+        `Rozstrel sa nepodarilo uložiť: ${error.message}`
+      );
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function undoLastVisit() {
+    if (saving || !history.length || !matchId) return;
+
+    const lastEntry = history[0];
+
+    setSaving(true);
+    setMessage('Vraciam poslednú návštevu...');
+
+    try {
+      const { data, error } = await supabase.rpc(
+        'sp_undo_match_visit_with_darts',
         { p_match_id: matchId }
       );
 
       if (error) throw error;
 
-      if (!data || data.success === false) {
-        throw new Error(
-          data?.message || 'Databáza nevrátila stav zápasu.'
-        );
+      if (data?.success === false) {
+        throw new Error(data.message || 'Undo sa nepodarilo.');
       }
 
-      // Skóre obnovíme podľa databázy.
-      const remaining1 = Number(data.remaining1);
-      const remaining2 = Number(data.remaining2);
-
-      if (
-        Number.isFinite(remaining1) &&
-        Number.isFinite(remaining2)
-      ) {
-        setScores([remaining1, remaining2]);
-      } else if (lastEntry.checkout) {
-        setScores([START_SCORE, START_SCORE]);
-      } else {
-        const restoredScores = [...scores];
-        restoredScores[lastEntry.player] = lastEntry.before;
-        setScores(restoredScores);
-      }
-
-      // Obnovenie legov.
-      const legs1 = Number(data.legs1);
-      const legs2 = Number(data.legs2);
-
-      if (
-        Number.isFinite(legs1) &&
-        Number.isFinite(legs2)
-      ) {
-        setLegs([legs1, legs2]);
-      }
-
-      // Obnovenie hráča na ťahu.
-      if (
-        data.current_player_slot === 1 ||
-        data.current_player_slot === 2
-      ) {
-        setCurrentPlayer(
-          data.current_player_slot === 1 ? 0 : 1
-        );
-      } else {
-        setCurrentPlayer(lastEntry.player);
-      }
-
-      // RPC nevracia počet šípok, obnovíme ho z lokálneho snapshotu.
-      if (Array.isArray(lastEntry.dartsUsedBefore)) {
-        setDartsUsed([...lastEntry.dartsUsedBefore]);
-      } else {
-        const restoredDarts = [...dartsUsed];
-        restoredDarts[lastEntry.player] = Math.max(
-          0,
-          restoredDarts[lastEntry.player] - lastEntry.darts
-        );
-        setDartsUsed(restoredDarts);
-      }
-
-      if (Array.isArray(lastEntry.legHistoryBefore)) {
-        setLegHistory([...lastEntry.legHistoryBefore]);
-      } else if (lastEntry.checkout) {
-        setLegHistory((old) => old.slice(0, -1));
-      }
+      applyDatabaseState(data);
 
       setHistory((old) => old.slice(1));
       setVisitInput('');
       setDoubleOut(false);
       setDartsThisVisit(3);
-      setBullOff(false);
-      setFinished(false);
-      setMessage(
-        data.message || 'Posledná návšteva bola vrátená.'
-      );
+      setMatchCompleted(false);
+
+      setMessage('Posledná návšteva bola vrátená.');
     } catch (error) {
-      console.error('Vrátenie návštevy zlyhalo:', error);
+      console.error('Undo zlyhalo:', error);
       setMessage(
-        error.message || 'Poslednú návštevu sa nepodarilo vrátiť.'
+        `Poslednú návštevu sa nepodarilo vrátiť: ${error.message}`
       );
     } finally {
       setSaving(false);
@@ -325,65 +459,16 @@ export default function LiveScore({
     }
   }
 
-  function decideBull(winner) {
-    const nextLegs = [...legs];
-    nextLegs[winner] += 1;
-
-    const entry = {
-      player: winner,
-      name: names[winner],
-      scored: 0,
-      entered: 0,
-      before: scores[winner],
-      after: scores[winner],
-      darts: 0,
-      bust: false,
-      checkout: false,
-      bullOff: true,
-      leg: legs[0] + legs[1] + 1,
-    };
-
-    setHistory((old) => [entry, ...old]);
-
-    setLegHistory((old) => [
-      ...old,
-      {
-        winner,
-        legs: nextLegs,
-        history: [entry],
-      },
-    ]);
-
-    setLegs(nextLegs);
-    setScores([START_SCORE, START_SCORE]);
-    setDartsUsed([0, 0]);
-    setCurrentPlayer(winner);
-    setBullOff(false);
-    setMessage(
-      `${names[winner]} vyhráva rozstrel na bull a leg.`
-    );
-  }
-
-  // Uloženie konečného výsledku.
   async function finishMatch() {
-    if (saving) return;
-
-    if (!matchId) {
-      setMessage('Chýba ID zápasu. Výsledok sa nedá uložiť.');
-      setFinished(false);
-      return;
-    }
+    if (saving || !matchId) return;
 
     if (legs[0] === legs[1]) {
-      setMessage(
-        'Výsledok nemôže byť remíza. Zápas musí mať víťaza.'
-      );
-      setFinished(false);
+      setMessage('Výsledok nemôže byť remíza.');
       return;
     }
 
     setSaving(true);
-    setMessage('Ukladám konečný výsledok zápasu...');
+    setMessage('Ukladám konečný výsledok...');
 
     try {
       const { data, error } = await supabase.rpc(
@@ -397,13 +482,12 @@ export default function LiveScore({
 
       if (error) throw error;
 
-      if (data && data.success === false) {
-        throw new Error(
-          data.message || 'Databáza odmietla potvrdiť výsledok.'
-        );
+      if (data?.success === false) {
+        throw new Error(data.message || 'Uloženie výsledku zlyhalo.');
       }
 
       setFinished(false);
+      setMatchCompleted(true);
       setMessage('Výsledok zápasu bol úspešne uložený.');
 
       if (typeof onFinish === 'function') {
@@ -417,10 +501,7 @@ export default function LiveScore({
         });
       }
     } catch (error) {
-      console.error('Uloženie výsledku zlyhalo:', error);
-      setMessage(
-        error.message || 'Nepodarilo sa uložiť výsledok zápasu.'
-      );
+      setMessage(error.message || 'Nepodarilo sa uložiť výsledok.');
     } finally {
       setSaving(false);
     }
@@ -461,7 +542,6 @@ export default function LiveScore({
       flexDirection: 'column',
       gap: 12,
     },
-
     header: {
       display: 'flex',
       justifyContent: 'space-between',
@@ -469,14 +549,12 @@ export default function LiveScore({
       gap: 10,
       flexWrap: 'wrap',
     },
-
     brand: {
       color: '#e6b84b',
       fontWeight: 900,
       letterSpacing: 2,
       fontSize: 'clamp(17px, 2.5vw, 24px)',
     },
-
     button: {
       border: '1px solid #51617a',
       borderRadius: 10,
@@ -486,13 +564,11 @@ export default function LiveScore({
       fontWeight: 700,
       cursor: 'pointer',
     },
-
     players: {
       display: 'grid',
       gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
       gap: 12,
     },
-
     panel: {
       background: '#142943',
       border: '1px solid #314762',
@@ -501,13 +577,11 @@ export default function LiveScore({
       textAlign: 'center',
       minWidth: 0,
     },
-
     playerName: {
       fontSize: 'clamp(14px, 2vw, 22px)',
       fontWeight: 800,
       overflowWrap: 'anywhere',
     },
-
     score: {
       fontSize: 'clamp(52px, 11vw, 108px)',
       lineHeight: 1.05,
@@ -515,12 +589,10 @@ export default function LiveScore({
       color: '#fff',
       fontVariantNumeric: 'tabular-nums',
     },
-
     small: {
       color: '#b9c7d9',
       fontSize: 'clamp(11px, 1.4vw, 14px)',
     },
-
     center: {
       display: 'flex',
       alignItems: 'center',
@@ -529,26 +601,22 @@ export default function LiveScore({
       flexWrap: 'wrap',
       textAlign: 'center',
     },
-
     legScore: {
       color: '#e6b84b',
       fontSize: 'clamp(30px, 5vw, 48px)',
       fontWeight: 900,
     },
-
     section: {
       background: '#101f34',
       border: '1px solid #2b4059',
       borderRadius: 14,
       padding: 14,
     },
-
     keypad: {
       display: 'grid',
       gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
       gap: 8,
     },
-
     key: {
       border: '1px solid #415775',
       borderRadius: 12,
@@ -559,13 +627,11 @@ export default function LiveScore({
       fontWeight: 800,
       cursor: 'pointer',
     },
-
     gold: {
       background: '#bd9136',
       color: '#101827',
       border: 'none',
     },
-
     input: {
       fontSize: 30,
       fontWeight: 900,
@@ -574,13 +640,11 @@ export default function LiveScore({
       textAlign: 'center',
       fontVariantNumeric: 'tabular-nums',
     },
-
     lower: {
       display: 'grid',
       gridTemplateColumns: 'minmax(0, 1.15fr) minmax(0, .85fr)',
       gap: 12,
     },
-
     list: {
       maxHeight: 210,
       overflow: 'auto',
@@ -588,7 +652,6 @@ export default function LiveScore({
       flexDirection: 'column',
       gap: 6,
     },
-
     row: {
       display: 'flex',
       justifyContent: 'space-between',
@@ -598,7 +661,6 @@ export default function LiveScore({
       background: '#172b44',
       fontSize: 13,
     },
-
     overlay: {
       position: 'fixed',
       inset: 0,
@@ -610,16 +672,21 @@ export default function LiveScore({
     },
   };
 
+  const disabled = saving || loading || matchCompleted;
+
   return (
     <div style={styles.root}>
       <style>{`
-        * {
-          box-sizing: border-box;
-        }
+        * { box-sizing: border-box; }
 
         button:focus-visible {
           outline: 3px solid #e6b84b;
           outline-offset: 2px;
+        }
+
+        button:disabled {
+          opacity: .45;
+          cursor: not-allowed;
         }
 
         @media (max-width: 850px) {
@@ -644,15 +711,13 @@ export default function LiveScore({
         <div style={{ display: 'flex', gap: 8 }}>
           <button
             style={styles.button}
+            disabled={disabled}
             onClick={() => setFinished(true)}
           >
             Ukončiť zápas
           </button>
 
-          <button
-            style={styles.button}
-            onClick={closeScreen}
-          >
+          <button style={styles.button} onClick={closeScreen}>
             Späť
           </button>
         </div>
@@ -665,22 +730,18 @@ export default function LiveScore({
             style={{
               ...styles.panel,
               borderColor:
-                currentPlayer === i && !bullOff
+                currentPlayer === i && !bullOffPhase
                   ? '#e6b84b'
                   : '#314762',
               boxShadow:
-                currentPlayer === i && !bullOff
+                currentPlayer === i && !bullOffPhase
                   ? '0 0 0 2px rgba(230,184,75,.18)'
                   : 'none',
             }}
           >
-            <div style={styles.playerName}>
-              {names[i]}
-            </div>
+            <div style={styles.playerName}>{names[i]}</div>
 
-            <div style={styles.score}>
-              {scores[i]}
-            </div>
+            <div style={styles.score}>{scores[i]}</div>
 
             <div style={styles.small}>
               PRIEMER / 3 ŠÍPKY:
@@ -711,7 +772,7 @@ export default function LiveScore({
               />
             </div>
 
-            {currentPlayer === i && !bullOff && (
+            {currentPlayer === i && !bullOffPhase && (
               <div
                 style={{
                   color: '#e6b84b',
@@ -720,6 +781,12 @@ export default function LiveScore({
                 }}
               >
                 NA ŤAHU
+              </div>
+            )}
+
+            {dartsUsed[i] >= MAX_DARTS && !matchCompleted && (
+              <div style={{ color: '#f3cc70', marginTop: 8, fontWeight: 800 }}>
+                LIMIT VYČERPANÝ
               </div>
             )}
           </section>
@@ -742,7 +809,7 @@ export default function LiveScore({
         </div>
 
         <div>
-          <div style={styles.small}>AKTUÁLNE HÁDŽE</div>
+          <div style={styles.small}>AKTUÁLNY STAV</div>
           <div
             style={{
               fontSize: 20,
@@ -750,7 +817,11 @@ export default function LiveScore({
               fontWeight: 900,
             }}
           >
-            {bullOff ? 'ROZSTREL NA BULL' : activeName}
+            {bullOffPhase === 'opening'
+              ? 'ÚVODNÝ ROZSTREL'
+              : bullOffPhase === 'final'
+                ? 'ZÁVEREČNÝ ROZSTREL'
+                : activeName}
           </div>
         </div>
       </div>
@@ -769,6 +840,78 @@ export default function LiveScore({
         </div>
       )}
 
+      {bullOffPhase && !matchCompleted && (
+        <section
+          style={{
+            ...styles.section,
+            borderColor: '#bd9136',
+            textAlign: 'center',
+          }}
+        >
+          <div
+            style={{
+              color: '#e6b84b',
+              fontSize: 22,
+              fontWeight: 900,
+              marginBottom: 8,
+            }}
+          >
+            {bullOffPhase === 'opening'
+              ? 'ÚVODNÝ ROZSTREL – KTO ZAČÍNA?'
+              : 'ZÁVEREČNÝ ROZSTREL – KTO VYHRÁVA LEG?'}
+          </div>
+
+          <div style={{ ...styles.small, marginBottom: 14 }}>
+            Rozhodca vyberie hráča, ktorého šípka je bližšie k stredu.
+            Pri rovnakej vzdialenosti zvolí nerozhodný rozstrel.
+          </div>
+
+          <div
+            style={{
+              display: 'grid',
+              gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+              gap: 8,
+            }}
+          >
+            <button
+              style={{ ...styles.key, ...styles.gold, fontSize: 15 }}
+              disabled={disabled}
+              onClick={() => recordBullOff(0, false)}
+            >
+              {names[0]} – BLIŽŠIE K STREDU
+            </button>
+
+            <button
+              style={{ ...styles.key, ...styles.gold, fontSize: 15 }}
+              disabled={disabled}
+              onClick={() => recordBullOff(1, false)}
+            >
+              {names[1]} – BLIŽŠIE K STREDU
+            </button>
+          </div>
+
+          <button
+            style={{
+              ...styles.button,
+              width: '100%',
+              marginTop: 9,
+              borderColor: '#e6b84b',
+            }}
+            disabled={disabled}
+            onClick={() => recordBullOff(null, true)}
+          >
+            NEROZHODNÉ – OPAKOVAŤ ROZSTREL
+          </button>
+
+          <div style={{ ...styles.small, marginTop: 12 }}>
+            Počet zaznamenaných pokusov:{' '}
+            {bullHistory.filter(
+              (item) => item.phase === bullOffPhase
+            ).length}
+          </div>
+        </section>
+      )}
+
       <div className="sp-lower" style={styles.lower}>
         <section style={styles.section}>
           <div
@@ -783,7 +926,7 @@ export default function LiveScore({
             <strong>ZADANIE NÁVŠTEVY</strong>
 
             <span style={styles.small}>
-              {bullOff
+              {bullOffPhase
                 ? 'Čaká sa na rozstrel'
                 : `Zostáva ${remainingDarts} šípok`}
             </span>
@@ -798,7 +941,7 @@ export default function LiveScore({
               <button
                 key={n}
                 style={styles.key}
-                disabled={bullOff || saving}
+                disabled={disabled || !!bullOffPhase}
                 onClick={() => addDigit(n)}
               >
                 {n}
@@ -807,7 +950,7 @@ export default function LiveScore({
 
             <button
               style={styles.key}
-              disabled={bullOff || saving}
+              disabled={disabled || !!bullOffPhase}
               onClick={() => setVisitInput('')}
             >
               C
@@ -815,7 +958,7 @@ export default function LiveScore({
 
             <button
               style={styles.key}
-              disabled={bullOff || saving}
+              disabled={disabled || !!bullOffPhase}
               onClick={() => addDigit(0)}
             >
               0
@@ -823,7 +966,7 @@ export default function LiveScore({
 
             <button
               style={styles.key}
-              disabled={bullOff || saving}
+              disabled={disabled || !!bullOffPhase}
               onClick={undoDigit}
             >
               ⌫
@@ -852,7 +995,7 @@ export default function LiveScore({
                 type="checkbox"
                 checked={doubleOut}
                 onChange={(e) => setDoubleOut(e.target.checked)}
-                disabled={bullOff || saving}
+                disabled={disabled || !!bullOffPhase}
               />
               Posledná šípka double
             </label>
@@ -872,7 +1015,7 @@ export default function LiveScore({
                 onChange={(e) =>
                   setDartsThisVisit(Number(e.target.value))
                 }
-                disabled={bullOff || saving}
+                disabled={disabled || !!bullOffPhase}
                 style={{
                   background: '#1b3452',
                   color: '#fff',
@@ -895,9 +1038,8 @@ export default function LiveScore({
               width: '100%',
               marginTop: 10,
               fontSize: 17,
-              opacity: saving ? 0.6 : 1,
             }}
-            disabled={bullOff || saving}
+            disabled={disabled || !!bullOffPhase}
             onClick={recordVisit}
           >
             {saving ? 'UKLADÁM...' : 'POTVRDIŤ NÁVŠTEVU'}
@@ -910,54 +1052,18 @@ export default function LiveScore({
               marginTop: 8,
               borderColor: '#bd9136',
               color: '#f3cc70',
-              opacity:
-                (!history.length || history[0]?.bullOff || saving || !matchId)
-                  ? 0.45
-                  : 1,
             }}
             disabled={
               !history.length ||
-              history[0]?.bullOff ||
               saving ||
-              !matchId
+              loading ||
+              matchCompleted ||
+              !!bullOffPhase
             }
             onClick={() => setUndoConfirm(true)}
           >
             KROK SPÄŤ – VRÁTIŤ POSLEDNÚ NÁVŠTEVU
           </button>
-
-          {bullOff && (
-            <div
-              style={{
-                marginTop: 12,
-                display: 'grid',
-                gridTemplateColumns: '1fr 1fr',
-                gap: 8,
-              }}
-            >
-              <button
-                style={{
-                  ...styles.key,
-                  ...styles.gold,
-                  fontSize: 14,
-                }}
-                onClick={() => decideBull(0)}
-              >
-                {names[0]} bližšie k bullu
-              </button>
-
-              <button
-                style={{
-                  ...styles.key,
-                  ...styles.gold,
-                  fontSize: 14,
-                }}
-                onClick={() => decideBull(1)}
-              >
-                {names[1]} bližšie k bullu
-              </button>
-            </div>
-          )}
         </section>
 
         <section style={styles.section}>
@@ -975,7 +1081,7 @@ export default function LiveScore({
 
             {history.map((item, index) => (
               <div
-                key={`${index}-${item.leg}`}
+                key={`${index}-${item.leg || 0}`}
                 style={styles.row}
               >
                 <span
@@ -985,22 +1091,15 @@ export default function LiveScore({
                   }}
                 >
                   {item.name}
-                  {item.bullOff
-                    ? ' · BULL'
-                    : item.bust
-                      ? ' · BUST'
-                      : item.checkout
-                        ? ' · CHECKOUT'
-                        : ''}
+                  {item.bust
+                    ? ' · BUST'
+                    : item.checkout
+                      ? ' · CHECKOUT'
+                      : ''}
                 </span>
 
                 <strong>
-                  {item.bullOff
-                    ? 'BULL'
-                    : item.bust
-                      ? '0'
-                      : item.entered}
-
+                  {item.entered}
                   <span style={styles.small}>
                     {' '}({item.darts} š.)
                   </span>
@@ -1028,6 +1127,36 @@ export default function LiveScore({
               {scores[0]} : {scores[1]}
             </div>
           </div>
+
+          <div
+            style={{
+              marginTop: 12,
+              borderTop: '1px solid #314762',
+              paddingTop: 10,
+            }}
+          >
+            <div style={styles.small}>HISTÓRIA ROZSTRELOV</div>
+
+            {bullHistory.length === 0 && (
+              <div style={styles.small}>Zatiaľ bez rozstrelov.</div>
+            )}
+
+            {bullHistory.map((item, index) => (
+              <div key={index} style={styles.row}>
+                <span>
+                  {item.phase === 'opening'
+                    ? 'Úvodný'
+                    : 'Záverečný'} rozstrel
+                </span>
+
+                <strong>
+                  {item.is_tie
+                    ? 'Remíza'
+                    : names[(item.winner_slot || 1) - 1]}
+                </strong>
+              </div>
+            ))}
+          </div>
         </section>
       </div>
 
@@ -1050,10 +1179,8 @@ export default function LiveScore({
             </div>
 
             <div style={{ margin: '14px 0', color: '#d7e0ec' }}>
-              {history[0]
-                ? `${history[0].name} – ${history[0].entered} bodov (${history[0].darts} šípky).`
-                : 'Posledná návšteva bude odstránená zo zápasu.'}
-              {' '}Táto zmena sa uloží aj do databázy.
+              Posledná návšteva bude odstránená zo zápasu.
+              Táto zmena sa uloží aj do databázy.
             </div>
 
             <div
@@ -1077,7 +1204,6 @@ export default function LiveScore({
                   ...styles.button,
                   background: '#bd9136',
                   color: '#101827',
-                  opacity: saving ? 0.6 : 1,
                 }}
                 disabled={saving}
                 onClick={undoLastVisit}
@@ -1137,7 +1263,6 @@ export default function LiveScore({
                   ...styles.button,
                   background: '#bd9136',
                   color: '#101827',
-                  opacity: saving ? 0.6 : 1,
                 }}
                 disabled={saving}
                 onClick={finishMatch}
@@ -1145,6 +1270,42 @@ export default function LiveScore({
                 {saving ? 'UKLADÁM...' : 'POTVRDIŤ KONIEC'}
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {matchCompleted && (
+        <div style={styles.overlay}>
+          <div
+            style={{
+              ...styles.panel,
+              width: 'min(440px, 100%)',
+            }}
+          >
+            <div
+              style={{
+                color: '#e6b84b',
+                fontSize: 25,
+                fontWeight: 900,
+              }}
+            >
+              ZÁPAS UKONČENÝ
+            </div>
+
+            <div style={{ margin: '15px 0', fontSize: 30, fontWeight: 900 }}>
+              {legs[0]} : {legs[1]}
+            </div>
+
+            <button
+              style={{
+                ...styles.key,
+                ...styles.gold,
+                width: '100%',
+              }}
+              onClick={closeScreen}
+            >
+              ZAVRIEŤ ZÁPAS
+            </button>
           </div>
         </div>
       )}
