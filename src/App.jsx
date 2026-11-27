@@ -4,7 +4,7 @@ import {
   Club, LayoutDashboard, LogOut, Menu, Settings, ShieldCheck,
   Target, Trophy, Users, X
 } from 'lucide-react';
-import { supabase, supabaseConfigured } from './supabase';
+import { supabase, supabaseConfigured } from './supabase.js';
 
 const navigation = [
   ['Prehľad', LayoutDashboard],
