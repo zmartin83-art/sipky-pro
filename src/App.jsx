@@ -7,7 +7,7 @@ import {
 import { supabase, supabaseConfigured } from './supabase';
 
 const navigation = [
-  ['Prehľad', LayoutDashboard],2
+  ['Prehľad', LayoutDashboard],
   ['Hráči', Users],
   ['Turnaje', Trophy],
   ['Zápasy', Target],
