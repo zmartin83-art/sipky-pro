@@ -104,8 +104,7 @@ export default function LiveScore({
       leg: legs[0] + legs[1] + 1,
     };
 
-    // Uloženie návštevy do databázy.
-    // Pri chybe sa lokálne skóre nezmení.
+    // Uloženie návštevy do Supabase.
     if (matchId) {
       setSaving(true);
       setMessage('Ukladám návštevu do databázy...');
@@ -120,24 +119,17 @@ export default function LiveScore({
           }
         );
 
-        if (error) {
-          console.error('Chyba pri ukladaní návštevy:', error);
-          setMessage(
-            `Návštevu sa nepodarilo uložiť: ${error.message}`
-          );
-          return;
-        }
+        if (error) throw error;
 
         if (data && data.success === false) {
-          setMessage(
+          throw new Error(
             data.message || 'Databáza odmietla uložiť návštevu.'
           );
-          return;
         }
       } catch (error) {
         console.error('Chyba pri ukladaní návštevy:', error);
         setMessage(
-          `Chyba pri ukladaní: ${error.message || 'Neznáma chyba'}`
+          `Návštevu sa nepodarilo uložiť: ${error.message || 'Neznáma chyba'}`
         );
         return;
       } finally {
@@ -145,6 +137,7 @@ export default function LiveScore({
       }
     }
 
+    // Aktualizácia počtu šípok a histórie.
     const nextDarts = [...dartsUsed];
     nextDarts[currentPlayer] += darts;
 
@@ -154,6 +147,15 @@ export default function LiveScore({
     setDoubleOut(false);
     setDartsThisVisit(3);
 
+    // OPRAVA: odpočítanie skóre po každej návšteve.
+    // Pri BUST zostáva pôvodné skóre.
+    if (!checkout) {
+      const nextScores = [...scores];
+      nextScores[currentPlayer] = bust ? before : after;
+      setScores(nextScores);
+    }
+
+    // Ukončenie legu pri úspešnom double oute.
     if (checkout) {
       const nextLegs = [...legs];
       nextLegs[currentPlayer] += 1;
@@ -176,6 +178,7 @@ export default function LiveScore({
       return;
     }
 
+    // Kontrola limitu 45 šípok.
     if (
       nextDarts[0] >= MAX_DARTS &&
       nextDarts[1] >= MAX_DARTS
@@ -255,7 +258,7 @@ export default function LiveScore({
     );
   }
 
-  // Uloženie konečného výsledku do Supabase.
+  // Uloženie konečného výsledku.
   async function finishMatch() {
     if (saving) return;
 
@@ -309,7 +312,6 @@ export default function LiveScore({
       }
     } catch (error) {
       console.error('Uloženie výsledku zlyhalo:', error);
-
       setMessage(
         error.message || 'Nepodarilo sa uložiť výsledok zápasu.'
       );
