@@ -2,170 +2,197 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from './supabase';
 import {
-  Trophy,
-  Target,
-  Crosshair,
-  RefreshCw,
-  Medal,
-  BarChart3
+  BarChart3, Trophy, Target, Crosshair, Search, RefreshCw
 } from 'lucide-react';
 
-const num = value => Number(value || 0);
+const number = value => Number(value) || 0;
 
-export default function Statistics({ clubId, players = [], role = 'viewer' }) {
+const percent = (wins, matches) =>
+  matches ? Math.round((wins / matches) * 100) : 0;
+
+export default function Statistics({ clubId, players = [] }) {
   const [matches, setMatches] = useState([]);
   const [visits, setVisits] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [selectedPlayer, setSelectedPlayer] = useState('all');
+  const [search, setSearch] = useState('');
 
-  async function loadStatistics() {
-    if (!clubId) {
-      setLoading(false);
-      return;
-    }
+  async function load() {
+    if (!clubId) return;
 
     setLoading(true);
     setError('');
 
-    const { data: matchData, error: matchError } = await supabase
-      .from('matches')
-      .select('id, player1_id, player2_id, score1, score2, winner_id')
-      .eq('club_id', clubId)
-      .eq('status', 'finished')
-      .not('result_confirmed_at', 'is', null)
-      .not('winner_id', 'is', null);
+    try {
+      const { data: matchRows, error: matchError } = await supabase
+        .from('matches')
+        .select(`
+          id,
+          player1_id,
+          player2_id,
+          score1,
+          score2,
+          winner_id,
+          result_confirmed_at,
+          status
+        `)
+        .eq('club_id', clubId)
+        .eq('status', 'finished')
+        .not('result_confirmed_at', 'is', null)
+        .not('winner_id', 'is', null);
 
-    if (matchError) {
-      setError('Chyba pri načítaní zápasov: ' + matchError.message);
+      if (matchError) throw matchError;
+
+      const confirmedMatches = matchRows || [];
+      setMatches(confirmedMatches);
+
+      if (!confirmedMatches.length) {
+        setVisits([]);
+        return;
+      }
+
+      const matchIds = confirmedMatches.map(match => match.id);
+
+      const { data: visitRows, error: visitError } = await supabase
+        .from('match_visits')
+        .select(`
+          match_id,
+          player_id,
+          visit_score,
+          is_bust,
+          is_checkout,
+          darts_thrown
+        `)
+        .in('match_id', matchIds);
+
+      if (visitError) throw visitError;
+
+      setVisits(visitRows || []);
+    } catch (err) {
+      setError(err?.message || 'Štatistiky sa nepodarilo načítať.');
+    } finally {
       setLoading(false);
-      return;
     }
-
-    const finished = matchData || [];
-    setMatches(finished);
-
-    if (!finished.length) {
-      setVisits([]);
-      setLoading(false);
-      return;
-    }
-
-    const { data: visitData, error: visitError } = await supabase
-      .from('match_visits')
-      .select('match_id, player_id, visit_score, is_bust, is_checkout, darts_thrown')
-      .in('match_id', finished.map(match => match.id));
-
-    if (visitError) {
-      setError('Chyba pri načítaní návštev: ' + visitError.message);
-      setVisits([]);
-    } else {
-      setVisits(visitData || []);
-    }
-
-    setLoading(false);
   }
 
   useEffect(() => {
-    loadStatistics();
+    load();
   }, [clubId]);
 
-  const stats = useMemo(() => {
-    const rows = new Map();
+  const rows = useMemo(() => {
+    const result = players.map(player => ({
+      id: player.id,
+      name: player.name,
+      nickname: player.nickname,
+      matches: 0,
+      wins: 0,
+      losses: 0,
+      legsFor: 0,
+      legsAgainst: 0,
+      points: 0,
+      darts: 0,
+      visits: 0,
+      highVisit: 0,
+      checkouts: 0,
+      busts: 0,
+    }));
 
-    players.forEach(player => {
-      rows.set(player.id, {
-        ...player,
-        played: 0,
-        wins: 0,
-        losses: 0,
-        legsFor: 0,
-        legsAgainst: 0,
-        points: 0,
-        darts: 0,
-        highVisit: 0,
-        checkouts: 0,
-        busts: 0
-      });
-    });
+    const byId = new Map(result.map(player => [player.id, player]));
 
     matches.forEach(match => {
-      const sides = [
-        [match.player1_id, match.player2_id, match.score1, match.score2],
-        [match.player2_id, match.player1_id, match.score2, match.score1]
-      ];
+      const player1 = byId.get(match.player1_id);
+      const player2 = byId.get(match.player2_id);
 
-      sides.forEach(([id, opponent, ownLegs, otherLegs]) => {
-        const row = rows.get(id);
-        if (!row) return;
+      if (!player1 || !player2) return;
 
-        row.played += 1;
+      player1.matches++;
+      player2.matches++;
 
-        if (match.winner_id === id) row.wins += 1;
-        else row.losses += 1;
+      if (match.winner_id === player1.id) {
+        player1.wins++;
+        player2.losses++;
+      } else if (match.winner_id === player2.id) {
+        player2.wins++;
+        player1.losses++;
+      }
 
-        row.legsFor += num(ownLegs);
-        row.legsAgainst += num(otherLegs);
-      });
+      player1.legsFor += number(match.score1);
+      player1.legsAgainst += number(match.score2);
+
+      player2.legsFor += number(match.score2);
+      player2.legsAgainst += number(match.score1);
     });
 
     visits.forEach(visit => {
-      const row = rows.get(visit.player_id);
-      if (!row) return;
+      const player = byId.get(visit.player_id);
+      if (!player) return;
 
-      const bust = visit.is_bust === true;
-      const score = bust ? 0 : num(visit.visit_score);
+      const isBust = visit.is_bust === true;
+      const score = isBust ? 0 : number(visit.visit_score);
 
-      // Ak počet šípok nie je uložený, použijú sa 3.
-      const darts = num(visit.darts_thrown) || 3;
+      // Pri chýbajúcom počte šípok sa použijú tri.
+      const darts = number(visit.darts_thrown) > 0
+        ? number(visit.darts_thrown)
+        : 3;
 
-      row.points += score;
-      row.darts += darts;
+      player.visits++;
+      player.points += score;
+      player.darts += darts;
 
-      if (bust) row.busts += 1;
-      else row.highVisit = Math.max(row.highVisit, score);
+      if (!isBust) {
+        player.highVisit = Math.max(player.highVisit, score);
+      }
 
-      if (visit.is_checkout) row.checkouts += 1;
+      if (isBust) player.busts++;
+      if (visit.is_checkout) player.checkouts++;
     });
 
-    return [...rows.values()]
-      .map(row => ({
-        ...row,
-        winRate: row.played
-          ? Math.round(row.wins / row.played * 100)
-          : 0,
-        average: row.darts
-          ? row.points / row.darts * 3
-          : 0,
-        legDifference: row.legsFor - row.legsAgainst
-      }))
-      .sort((a, b) =>
-        b.wins - a.wins ||
-        b.winRate - a.winRate ||
-        b.legDifference - a.legDifference ||
-        b.average - a.average
-      );
+    return result.map(player => ({
+      ...player,
+      average: player.darts
+        ? (player.points / player.darts) * 3
+        : 0,
+      winRate: percent(player.wins, player.matches),
+      legDifference: player.legsFor - player.legsAgainst,
+    })).sort((a, b) =>
+      b.wins - a.wins ||
+      b.winRate - a.winRate ||
+      b.legDifference - a.legDifference ||
+      b.average - a.average
+    );
   }, [players, matches, visits]);
 
-  const visibleStats = selectedPlayer === 'all'
-    ? stats
-    : stats.filter(player => player.id === selectedPlayer);
+  const visibleRows = rows.filter(player =>
+    (selectedPlayer === 'all' || player.id === selectedPlayer) &&
+    `${player.name} ${player.nickname || ''}`
+      .toLowerCase()
+      .includes(search.toLowerCase())
+  );
 
-  const checkouts = visits.filter(v => v.is_checkout).length;
-  const admin = ['owner', 'admin'].includes(String(role).toLowerCase());
+  const totals = useMemo(() => ({
+    matches: matches.length,
+    visits: visits.length,
+    checkouts: visits.filter(visit => visit.is_checkout).length,
+  }), [matches, visits]);
 
   return (
     <div className="sp-statistics">
       <div className="sp-page-title">
         <div>
-          <span className="sp-kicker">ŠÍPKY PRO · ANALYTIKA KLUBU</span>
+          <span className="sp-kicker">
+            ŠÍPKY PRO / ANALYTIKA KLUBU
+          </span>
           <h1>Štatistiky</h1>
-          <p>Výkonnosť hráčov a potvrdené výsledky klubu.</p>
+          <p>
+            Výsledky a výkonnosť hráčov klubu.
+            Započítavajú sa iba potvrdené dokončené zápasy.
+          </p>
         </div>
 
         <button
           className="sp-outline"
-          onClick={loadStatistics}
+          onClick={load}
           disabled={loading}
         >
           <RefreshCw size={15} />
@@ -173,105 +200,218 @@ export default function Statistics({ clubId, players = [], role = 'viewer' }) {
         </button>
       </div>
 
-      {error && <div className="sp-message">{error}</div>}
+      {error && (
+        <div className="sp-message">{error}</div>
+      )}
 
       <div className="sp-overview-grid">
         <div className="sp-overview-card">
           <Trophy />
           <span>Potvrdené zápasy</span>
-          <strong>{matches.length}</strong>
+          <strong>{totals.matches}</strong>
         </div>
 
         <div className="sp-overview-card">
           <Target />
           <span>Zapísané návštevy</span>
-          <strong>{visits.length}</strong>
+          <strong>{totals.visits}</strong>
         </div>
 
         <div className="sp-overview-card">
           <Crosshair />
           <span>Checkouty</span>
-          <strong>{checkouts}</strong>
+          <strong>{totals.checkouts}</strong>
         </div>
       </div>
 
       <div className="sp-panel">
-        <div className="sp-statistics-heading">
-          <div>
-            <span className="sp-kicker">PORADIE KLUBU</span>
-            <h2><Medal size={19} /> Rebríček hráčov</h2>
+        <div className="sp-stat-toolbar">
+          <div className="sp-stat-heading">
+            <BarChart3 size={19} />
+            <strong>Rebríček hráčov</strong>
           </div>
 
-          <select
-            value={selectedPlayer}
-            onChange={event => setSelectedPlayer(event.target.value)}
-          >
-            <option value="all">Všetci hráči</option>
-            {players.map(player => (
-              <option key={player.id} value={player.id}>
-                {player.name}
-              </option>
-            ))}
-          </select>
+          <div className="sp-stat-filters">
+            <label>
+              Hráč
+              <select
+                value={selectedPlayer}
+                onChange={event =>
+                  setSelectedPlayer(event.target.value)
+                }
+              >
+                <option value="all">Všetci hráči</option>
+
+                {players.map(player => (
+                  <option key={player.id} value={player.id}>
+                    {player.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label>
+              Hľadať
+              <div className="sp-search">
+                <Search size={16} />
+                <input
+                  value={search}
+                  onChange={event => setSearch(event.target.value)}
+                  placeholder="Meno hráča"
+                />
+              </div>
+            </label>
+          </div>
         </div>
 
         {loading ? (
-          <div className="sp-empty">Načítavam štatistiky...</div>
-        ) : visibleStats.length === 0 ? (
-          <div className="sp-empty">
-            Zatiaľ nie sú dostupné potvrdené výsledky.
-          </div>
+          <p className="sp-empty">
+            Načítavam štatistiky…
+          </p>
+        ) : !visibleRows.length ? (
+          <p className="sp-empty">
+            Zatiaľ nie sú dostupné žiadne štatistiky.
+          </p>
         ) : (
-          <div className="sp-statistics-table-wrap">
-            <table className="sp-statistics-table">
+          <div className="sp-stat-table-wrap">
+            <table className="sp-stat-table">
               <thead>
                 <tr>
                   <th>#</th>
                   <th>Hráč</th>
-                  <th>Zápasy</th>
-                  <th>Výhry</th>
+                  <th>Z</th>
+                  <th>V</th>
+                  <th>P</th>
                   <th>Úspešnosť</th>
                   <th>Legy</th>
-                  <th>Priemer</th>
-                  <th>Naj návšteva</th>
-                  <th>Checkouty</th>
+                  <th>Rozdiel</th>
+                  <th>Priemer / 3 šípky</th>
+                  <th>Najvyššia návšteva</th>
+                  <th>Checkout</th>
+                  <th>BUST</th>
                 </tr>
               </thead>
 
               <tbody>
-                {visibleStats.map(player => (
+                {visibleRows.map((player, index) => (
                   <tr key={player.id}>
-                    <td>{stats.findIndex(p => p.id === player.id) + 1}</td>
+                    <td>{index + 1}</td>
+
                     <td>
                       <strong>{player.name}</strong>
-                      {player.nickname && <small>{player.nickname}</small>}
+                      {player.nickname && (
+                        <small>{player.nickname}</small>
+                      )}
                     </td>
-                    <td>{player.played}</td>
-                    <td>{player.wins} / {player.losses}</td>
+
+                    <td>{player.matches}</td>
+                    <td>{player.wins}</td>
+                    <td>{player.losses}</td>
                     <td>{player.winRate}%</td>
-                    <td>{player.legsFor} : {player.legsAgainst}</td>
+                    <td>
+                      {player.legsFor}:{player.legsAgainst}
+                    </td>
+                    <td>
+                      {player.legDifference > 0 ? '+' : ''}
+                      {player.legDifference}
+                    </td>
                     <td>{player.average.toFixed(2)}</td>
-                    <td>{player.highVisit || '—'}</td>
+                    <td>{player.highVisit}</td>
                     <td>{player.checkouts}</td>
+                    <td>{player.busts}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         )}
-
-        <p className="sp-statistics-note">
-          Priemer je prepočítaný na 3 šípky.
-          BUST sa započítava ako 0 bodov.
-        </p>
       </div>
 
-      {admin && (
-        <p className="sp-statistics-admin">
-          <BarChart3 size={15} />
-          Rozšírené klubové analýzy budú doplnené v ďalšej etape.
-        </p>
-      )}
+      <style>{`
+        .sp-statistics .sp-stat-toolbar {
+          display:flex;
+          justify-content:space-between;
+          gap:18px;
+          align-items:center;
+          margin-bottom:18px;
+          flex-wrap:wrap;
+        }
+
+        .sp-statistics .sp-stat-heading {
+          display:flex;
+          align-items:center;
+          gap:10px;
+          color:var(--gold2);
+        }
+
+        .sp-stat-filters {
+          display:flex;
+          gap:12px;
+          align-items:end;
+          flex-wrap:wrap;
+        }
+
+        .sp-stat-filters label {
+          min-width:180px;
+        }
+
+        .sp-stat-filters .sp-search {
+          max-width:220px;
+        }
+
+        .sp-stat-table-wrap {
+          overflow-x:auto;
+        }
+
+        .sp-stat-table {
+          width:100%;
+          border-collapse:collapse;
+          white-space:nowrap;
+          font-size:12px;
+        }
+
+        .sp-stat-table th,
+        .sp-stat-table td {
+          padding:12px 10px;
+          text-align:right;
+          border-top:1px solid var(--line);
+        }
+
+        .sp-stat-table th {
+          color:var(--gold);
+          font-size:10px;
+          text-transform:uppercase;
+        }
+
+        .sp-stat-table th:nth-child(2),
+        .sp-stat-table td:nth-child(2) {
+          text-align:left;
+        }
+
+        .sp-stat-table td strong,
+        .sp-stat-table td small {
+          display:block;
+        }
+
+        .sp-stat-table td small {
+          color:var(--muted);
+          margin-top:3px;
+        }
+
+        @media(max-width:700px) {
+          .sp-stat-filters {
+            width:100%;
+          }
+
+          .sp-stat-filters label {
+            width:100%;
+          }
+
+          .sp-stat-filters .sp-search {
+            max-width:none;
+          }
+        }
+      `}</style>
     </div>
   );
 }
