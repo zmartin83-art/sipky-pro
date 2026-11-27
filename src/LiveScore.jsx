@@ -474,52 +474,12 @@ export default function LiveScore({
     }
   }
 
-  async function finishMatch() {
-    if (saving || !matchId) return;
-
-    if (legs[0] === legs[1]) {
-      setMessage('Výsledok nemôže byť remíza.');
-      return;
-    }
-
-    setSaving(true);
-    setMessage('Ukladám konečný výsledok...');
-
-    try {
-      const { data, error } = await supabase.rpc(
-        'sp_save_match_result',
-        {
-          p_match_id: matchId,
-          p_score1: legs[0],
-          p_score2: legs[1],
-        }
-      );
-
-      if (error) throw error;
-
-      if (data?.success === false) {
-        throw new Error(data.message || 'Uloženie výsledku zlyhalo.');
-      }
-
-      setFinished(false);
-      setMatchCompleted(true);
-      setMessage('Výsledok zápasu bol úspešne uložený.');
-
-      if (typeof onFinish === 'function') {
-        onFinish({
-          legs,
-          history,
-          scores,
-          darts: dartsUsed,
-          saved: true,
-          databaseResult: data,
-        });
-      }
-    } catch (error) {
-      setMessage(error.message || 'Nepodarilo sa uložiť výsledok.');
-    } finally {
-      setSaving(false);
-    }
+  // Predčasné ukončenie iba zatvorí živý zápasový panel.
+  // Nezapisuje neúplný stav ako oficiálny výsledok.
+  function abandonMatch() {
+    if (saving || matchCompleted) return;
+    setFinished(false);
+    closeScreen();
   }
 
   function closeScreen() {
@@ -729,7 +689,7 @@ export default function LiveScore({
             disabled={disabled}
             onClick={() => setFinished(true)}
           >
-            Ukončiť zápas
+            Predčasne ukončiť
           </button>
 
           <button style={styles.button} onClick={closeScreen}>
@@ -1268,7 +1228,7 @@ export default function LiveScore({
                 fontWeight: 900,
               }}
             >
-              UKONČIŤ ZÁPAS?
+              PREDČASNE UKONČIŤ ZÁPAS?
             </div>
 
             <div
@@ -1279,6 +1239,11 @@ export default function LiveScore({
               }}
             >
               {legs[0]} : {legs[1]}
+            </div>
+
+            <div style={{ margin: '0 0 14px', color: '#d7e0ec' }}>
+              Zápas sa ukončí bez uloženia oficiálneho výsledku.
+              Nedokončený zápas sa nebude počítať do výsledkov.
             </div>
 
             <div
@@ -1293,7 +1258,7 @@ export default function LiveScore({
                 style={styles.button}
                 onClick={() => setFinished(false)}
               >
-                Pokračovať
+                Pokračovať v zápase
               </button>
 
               <button
@@ -1303,9 +1268,9 @@ export default function LiveScore({
                   color: '#101827',
                 }}
                 disabled={saving}
-                onClick={finishMatch}
+                onClick={abandonMatch}
               >
-                {saving ? 'UKLADÁM...' : 'POTVRDIŤ KONIEC'}
+                ÁNO, UKONČIŤ BEZ VÝSLEDKU
               </button>
             </div>
           </div>
