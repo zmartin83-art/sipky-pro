@@ -23,6 +23,7 @@ export default function LiveScore({
   const [bullOff, setBullOff] = useState(false);
   const [finished, setFinished] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [undoConfirm, setUndoConfirm] = useState(false);
 
   const names = [player1, player2];
   const activeName = names[currentPlayer];
@@ -101,6 +102,9 @@ export default function LiveScore({
       checkout,
       bullOff: false,
       leg: legs[0] + legs[1] + 1,
+      // Snapshot na obnovenie počtu šípok po Undo.
+      dartsUsedBefore: [...dartsUsed],
+      legHistoryBefore: [...legHistory],
     };
 
     // Uloženie návštevy do Supabase.
@@ -214,6 +218,110 @@ export default function LiveScore({
           ? 'BUST – skóre sa vracia späť.'
           : 'Návšteva zapísaná.'
       );
+    }
+  }
+
+  // Vrátenie poslednej uloženej návštevy.
+  async function undoLastVisit() {
+    if (saving || !matchId || history.length === 0) return;
+
+    const lastEntry = history[0];
+
+    // Rozstrel na bull sa zámerne nevracia.
+    if (!lastEntry || lastEntry.bullOff) return;
+
+    setSaving(true);
+    setMessage('Vraciam poslednú návštevu do databázy...');
+
+    try {
+      const { data, error } = await supabase.rpc(
+        'sp_undo_match_visit',
+        { p_match_id: matchId }
+      );
+
+      if (error) throw error;
+
+      if (!data || data.success === false) {
+        throw new Error(
+          data?.message || 'Databáza nevrátila stav zápasu.'
+        );
+      }
+
+      // Skóre obnovíme podľa databázy.
+      const remaining1 = Number(data.remaining1);
+      const remaining2 = Number(data.remaining2);
+
+      if (
+        Number.isFinite(remaining1) &&
+        Number.isFinite(remaining2)
+      ) {
+        setScores([remaining1, remaining2]);
+      } else if (lastEntry.checkout) {
+        setScores([START_SCORE, START_SCORE]);
+      } else {
+        const restoredScores = [...scores];
+        restoredScores[lastEntry.player] = lastEntry.before;
+        setScores(restoredScores);
+      }
+
+      // Obnovenie legov.
+      const legs1 = Number(data.legs1);
+      const legs2 = Number(data.legs2);
+
+      if (
+        Number.isFinite(legs1) &&
+        Number.isFinite(legs2)
+      ) {
+        setLegs([legs1, legs2]);
+      }
+
+      // Obnovenie hráča na ťahu.
+      if (
+        data.current_player_slot === 1 ||
+        data.current_player_slot === 2
+      ) {
+        setCurrentPlayer(
+          data.current_player_slot === 1 ? 0 : 1
+        );
+      } else {
+        setCurrentPlayer(lastEntry.player);
+      }
+
+      // RPC nevracia počet šípok, obnovíme ho z lokálneho snapshotu.
+      if (Array.isArray(lastEntry.dartsUsedBefore)) {
+        setDartsUsed([...lastEntry.dartsUsedBefore]);
+      } else {
+        const restoredDarts = [...dartsUsed];
+        restoredDarts[lastEntry.player] = Math.max(
+          0,
+          restoredDarts[lastEntry.player] - lastEntry.darts
+        );
+        setDartsUsed(restoredDarts);
+      }
+
+      if (Array.isArray(lastEntry.legHistoryBefore)) {
+        setLegHistory([...lastEntry.legHistoryBefore]);
+      } else if (lastEntry.checkout) {
+        setLegHistory((old) => old.slice(0, -1));
+      }
+
+      setHistory((old) => old.slice(1));
+      setVisitInput('');
+      setDoubleOut(false);
+      setDartsThisVisit(3);
+      setBullOff(false);
+      setFinished(false);
+      setMessage(
+        data.message || 'Posledná návšteva bola vrátená.'
+      );
+    } catch (error) {
+      console.error('Vrátenie návštevy zlyhalo:', error);
+      setMessage(
+        error.message || 'Poslednú návštevu sa nepodarilo vrátiť.'
+      );
+    } finally {
+      setSaving(false);
+      setUndoConfirm(false);
     }
   }
 
@@ -795,6 +903,29 @@ export default function LiveScore({
             {saving ? 'UKLADÁM...' : 'POTVRDIŤ NÁVŠTEVU'}
           </button>
 
+          <button
+            style={{
+              ...styles.button,
+              width: '100%',
+              marginTop: 8,
+              borderColor: '#bd9136',
+              color: '#f3cc70',
+              opacity:
+                (!history.length || history[0]?.bullOff || saving || !matchId)
+                  ? 0.45
+                  : 1,
+            }}
+            disabled={
+              !history.length ||
+              history[0]?.bullOff ||
+              saving ||
+              !matchId
+            }
+            onClick={() => setUndoConfirm(true)}
+          >
+            KROK SPÄŤ – VRÁTIŤ POSLEDNÚ NÁVŠTEVU
+          </button>
+
           {bullOff && (
             <div
               style={{
@@ -899,6 +1030,64 @@ export default function LiveScore({
           </div>
         </section>
       </div>
+
+      {undoConfirm && (
+        <div style={styles.overlay}>
+          <div
+            style={{
+              ...styles.panel,
+              width: 'min(440px, 100%)',
+            }}
+          >
+            <div
+              style={{
+                color: '#e6b84b',
+                fontSize: 21,
+                fontWeight: 900,
+              }}
+            >
+              VRÁTIŤ POSLEDNÚ NÁVŠTEVU?
+            </div>
+
+            <div style={{ margin: '14px 0', color: '#d7e0ec' }}>
+              {history[0]
+                ? `${history[0].name} – ${history[0].entered} bodov (${history[0].darts} šípky).`
+                : 'Posledná návšteva bude odstránená zo zápasu.'}
+              {' '}Táto zmena sa uloží aj do databázy.
+            </div>
+
+            <div
+              style={{
+                display: 'flex',
+                gap: 8,
+                justifyContent: 'center',
+                flexWrap: 'wrap',
+              }}
+            >
+              <button
+                style={styles.button}
+                disabled={saving}
+                onClick={() => setUndoConfirm(false)}
+              >
+                ZRUŠIŤ
+              </button>
+
+              <button
+                style={{
+                  ...styles.button,
+                  background: '#bd9136',
+                  color: '#101827',
+                  opacity: saving ? 0.6 : 1,
+                }}
+                disabled={saving}
+                onClick={undoLastVisit}
+              >
+                {saving ? 'VRACIAM...' : 'ÁNO, VRÁTIŤ'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {finished && (
         <div style={styles.overlay}>
