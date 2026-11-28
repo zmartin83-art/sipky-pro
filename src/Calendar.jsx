@@ -1,4 +1,12 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+
 import {
   CalendarDays, ChevronLeft, ChevronRight, Plus, Clock,
   MapPin, Users, CheckCircle2, XCircle, HelpCircle,
@@ -56,20 +64,30 @@ function Calendar({ supabase, club, role, userId }) {
   const [events, setEvents] = useState([]);
   const [responses, setResponses] = useState([]);
   const [attendance, setAttendance] = useState([]);
+  const [members, setMembers] = useState([]);
   const [selectedEvent, setSelectedEvent] = useState(null);
+
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState(emptyForm);
+
   const [loading, setLoading] = useState(false);
+  const [detailsLoading, setDetailsLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+
   const [message, setMessage] = useState('');
   const [myResponse, setMyResponse] = useState('maybe');
-  const [myAttendance, setMyAttendance] = useState('present');
+
+  const [attendanceDraft, setAttendanceDraft] = useState({});
+  const [attendanceNotes, setAttendanceNotes] = useState({});
+
+  const detailRequest = useRef(0);
 
   const canManage = ['admin', 'organizer'].includes(
     String(role || '').toLowerCase()
   );
 
   const monthStart = dateKey(month);
+
   const monthEnd = dateKey(new Date(
     month.getFullYear(),
     month.getMonth() + 1,
@@ -100,43 +118,70 @@ function Calendar({ supabase, club, role, userId }) {
     setLoading(false);
   }, [supabase, club?.id, monthStart, monthEnd]);
 
+  // Načítanie členov a ich hráčskych profilov.
+  const loadClubMembers = useCallback(async () => {
+    if (!club?.id) return [];
+
+    const { data: memberData, error: memberError } = await supabase
+      .from('club_members')
+      .select('user_id, role')
+      .eq('club_id', club.id)
+      .order('role');
+
+    if (memberError) {
+      throw new Error(
+        'Členov klubu sa nepodarilo načítať: ' + memberError.message
+      );
+    }
+
+    const clubMembers = memberData || [];
+
+    const { data: playerData, error: playerError } = await supabase
+      .from('players')
+      .select('id, club_id, auth_user_id, name, nickname, active')
+      .eq('club_id', club.id);
+
+    if (playerError) {
+      throw new Error(
+        'Hráčske profily sa nepodarilo načítať: ' + playerError.message
+      );
+    }
+
+    const players = playerData || [];
+
+    return clubMembers.map(member => {
+      const player = players.find(
+        item => item.auth_user_id === member.user_id
+      );
+
+      return {
+        ...member,
+        player_id: player?.id || null,
+        player_name: player?.name || null,
+        nickname: player?.nickname || null,
+        active: player?.active ?? null,
+      };
+    });
+  }, [supabase, club?.id]);
+
   const loadEventDetails = useCallback(async event => {
     if (!event?.id) return;
 
+    const requestId = ++detailRequest.current;
+
     setSelectedEvent(event);
+    setDetailsLoading(true);
+    setMessage('');
+
     setMyResponse('maybe');
-    setMyAttendance('present');
+    setResponses([]);
+    setAttendance([]);
+    setMembers([]);
+    setAttendanceDraft({});
+    setAttendanceNotes({});
 
-    const [responseResult, attendanceResult] = await Promise.all([
-      supabase
-        .from('club_event_responses')
-        .select('*')
-        .eq('event_id', event.id)
-        .eq('user_id', userId)
-        .maybeSingle(),
-
-      supabase
-        .from('club_event_attendance')
-        .select('*')
-        .eq('event_id', event.id)
-        .eq('user_id', userId)
-        .maybeSingle(),
-    ]);
-
-    if (responseResult.error) {
-      setMessage('Nepodarilo sa načítať tvoju odpoveď: ' + responseResult.error.message);
-    } else {
-      setMyResponse(responseResult.data?.response || 'maybe');
-    }
-
-    if (attendanceResult.error) {
-      setMessage('Nepodarilo sa načítať tvoju dochádzku: ' + attendanceResult.error.message);
-    } else if (attendanceResult.data) {
-      setMyAttendance(attendanceResult.data.attendance_status || 'present');
-    }
-
-    if (canManage) {
-      const [allResponses, allAttendance] = await Promise.all([
+    try {
+      const requests = [
         supabase
           .from('club_event_responses')
           .select('*')
@@ -146,32 +191,93 @@ function Calendar({ supabase, club, role, userId }) {
           .from('club_event_attendance')
           .select('*')
           .eq('event_id', event.id),
-      ]);
+      ];
 
-      if (allResponses.error) {
-        setMessage('Nepodarilo sa načítať prehľad odpovedí: ' + allResponses.error.message);
-      }
-      if (allAttendance.error) {
-        setMessage('Nepodarilo sa načítať prehľad dochádzky: ' + allAttendance.error.message);
+      if (canManage) {
+        requests.push(loadClubMembers());
+      } else {
+        requests.push(Promise.resolve([]));
       }
 
-      setResponses(allResponses.data || []);
-      setAttendance(allAttendance.data || []);
-    } else {
-      setResponses([]);
-      setAttendance([]);
+      const [responseResult, attendanceResult, memberResult] =
+        await Promise.all(requests);
+
+      if (requestId !== detailRequest.current) return;
+
+      if (responseResult.error) {
+        throw new Error(
+          'Odpovede sa nepodarilo načítať: ' +
+          responseResult.error.message
+        );
+      }
+
+      if (attendanceResult.error) {
+        throw new Error(
+          'Dochádzku sa nepodarilo načítať: ' +
+          attendanceResult.error.message
+        );
+      }
+
+      const allResponses = responseResult.data || [];
+      const allAttendance = attendanceResult.data || [];
+      const allMembers = memberResult || [];
+
+      setResponses(allResponses);
+      setAttendance(allAttendance);
+      setMembers(allMembers);
+
+      const ownResponse = allResponses.find(
+        item => item.user_id === userId
+      );
+
+      setMyResponse(ownResponse?.response || 'maybe');
+
+      const drafts = {};
+      const notes = {};
+
+      allMembers.forEach(member => {
+        const record = allAttendance.find(
+          item => item.user_id === member.user_id
+        );
+
+        drafts[member.user_id] =
+          record?.attendance_status || '';
+
+        notes[member.user_id] = record?.note || '';
+      });
+
+      setAttendanceDraft(drafts);
+      setAttendanceNotes(notes);
+
+    } catch (error) {
+      if (requestId === detailRequest.current) {
+        setMessage(error.message);
+      }
+    } finally {
+      if (requestId === detailRequest.current) {
+        setDetailsLoading(false);
+      }
     }
-  }, [supabase, userId, canManage]);
+  }, [supabase, userId, canManage, loadClubMembers]);
 
   useEffect(() => {
     loadEvents();
   }, [loadEvents]);
 
+  // Zneplatnenie starého načítavania pri zatvorení alebo odchode.
+  useEffect(() => {
+    return () => {
+      detailRequest.current += 1;
+    };
+  }, []);
+
   const calendarDays = useMemo(() => {
     const year = month.getFullYear();
     const monthIndex = month.getMonth();
+
     const first = new Date(year, monthIndex, 1);
     const last = new Date(year, monthIndex + 1, 0);
+
     const offset = (first.getDay() + 6) % 7;
     const days = [];
 
@@ -199,6 +305,29 @@ function Calendar({ supabase, club, role, userId }) {
 
     return grouped;
   }, [events]);
+
+  function getMemberName(member) {
+    if (member.nickname?.trim()) return member.nickname;
+    if (member.player_name?.trim()) return member.player_name;
+
+    if (member.user_id === userId) return 'Tvoj účet';
+
+    return 'Člen bez hráčskeho profilu';
+  }
+
+  function getMemberSubtitle(member) {
+    if (member.nickname && member.player_name) {
+      return member.player_name;
+    }
+
+    return member.user_id;
+  }
+
+  function getMemberForUser(targetUserId) {
+    return members.find(
+      member => member.user_id === targetUserId
+    );
+  }
 
   async function saveEvent(event) {
     event.preventDefault();
@@ -228,7 +357,9 @@ function Calendar({ supabase, club, role, userId }) {
         }
 
         if (form.until < form.date) {
-          throw new Error('Dátum ukončenia musí byť po začiatku série.');
+          throw new Error(
+            'Dátum ukončenia musí byť po začiatku série.'
+          );
         }
 
         const { data: series, error: seriesError } = await supabase
@@ -262,9 +393,15 @@ function Calendar({ supabase, club, role, userId }) {
         if (generateError) throw generateError;
 
         setMessage('Pravidelný tréning bol vytvorený.');
+
       } else {
-        const start = new Date(`${form.date}T${form.start_time}:00`);
-        const end = new Date(`${form.date}T${form.end_time}:00`);
+        const start = new Date(
+          `${form.date}T${form.start_time}:00`
+        );
+
+        const end = new Date(
+          `${form.date}T${form.end_time}:00`
+        );
 
         const { error } = await supabase
           .from('club_events')
@@ -283,9 +420,11 @@ function Calendar({ supabase, club, role, userId }) {
 
         if (error) throw error;
 
-        setMessage(form.event_type === 'training'
-          ? 'Tréning bol vytvorený.'
-          : 'Udalosť bola vytvorená.');
+        setMessage(
+          form.event_type === 'training'
+            ? 'Tréning bol vytvorený.'
+            : 'Udalosť bola vytvorená.'
+        );
       }
 
       setShowForm(false);
@@ -297,6 +436,7 @@ function Calendar({ supabase, club, role, userId }) {
       });
 
       await loadEvents();
+
     } catch (error) {
       setMessage('Uloženie sa nepodarilo: ' + error.message);
     } finally {
@@ -307,6 +447,8 @@ function Calendar({ supabase, club, role, userId }) {
   async function saveResponse() {
     if (!selectedEvent || !userId) return;
 
+    setSaving(true);
+
     const { error } = await supabase
       .from('club_event_responses')
       .upsert({
@@ -314,35 +456,119 @@ function Calendar({ supabase, club, role, userId }) {
         user_id: userId,
         response: myResponse,
         updated_at: new Date().toISOString(),
-      }, { onConflict: 'event_id,user_id' });
+      }, {
+        onConflict: 'event_id,user_id',
+      });
 
     if (error) {
-      setMessage('Odpoveď sa nepodarilo uložiť: ' + error.message);
+      setMessage(
+        'Odpoveď sa nepodarilo uložiť: ' + error.message
+      );
     } else {
       setMessage('Tvoja odpoveď bola uložená.');
       await loadEventDetails(selectedEvent);
     }
+
+    setSaving(false);
   }
 
-  async function saveMyAttendance() {
+  function updateAttendanceDraft(targetUserId, value) {
+    setAttendanceDraft(current => ({
+      ...current,
+      [targetUserId]: value,
+    }));
+  }
+
+  function updateAttendanceNote(targetUserId, value) {
+    setAttendanceNotes(current => ({
+      ...current,
+      [targetUserId]: value,
+    }));
+  }
+
+  async function saveMemberAttendance(member) {
     if (!selectedEvent || !canManage || !userId) return;
+
+    const selectedStatus = attendanceDraft[member.user_id];
+
+    if (!selectedStatus) {
+      setMessage('Najskôr vyber stav dochádzky člena.');
+      return;
+    }
+
+    setSaving(true);
+    setMessage('');
 
     const { error } = await supabase
       .from('club_event_attendance')
       .upsert({
         event_id: selectedEvent.id,
-        user_id: userId,
-        attendance_status: myAttendance,
+        user_id: member.user_id,
+        attendance_status: selectedStatus,
+        note: attendanceNotes[member.user_id]?.trim() || null,
         recorded_by: userId,
         recorded_at: new Date().toISOString(),
-      }, { onConflict: 'event_id,user_id' });
+      }, {
+        onConflict: 'event_id,user_id',
+      });
 
     if (error) {
-      setMessage('Dochádzku sa nepodarilo uložiť: ' + error.message);
+      setMessage(
+        'Dochádzku člena sa nepodarilo uložiť: ' + error.message
+      );
+      setSaving(false);
+      return;
+    }
+
+    setMessage(
+      'Dochádzka člena ' + getMemberName(member) + ' bola uložená.'
+    );
+
+    await loadEventDetails(selectedEvent);
+    setSaving(false);
+  }
+
+  async function saveAllAttendance() {
+    if (!selectedEvent || !canManage || !userId) return;
+
+    const records = members
+      .filter(member => attendanceDraft[member.user_id])
+      .map(member => ({
+        event_id: selectedEvent.id,
+        user_id: member.user_id,
+        attendance_status: attendanceDraft[member.user_id],
+        note: attendanceNotes[member.user_id]?.trim() || null,
+        recorded_by: userId,
+        recorded_at: new Date().toISOString(),
+      }));
+
+    if (!records.length) {
+      setMessage('Nie je vybraný žiadny stav dochádzky.');
+      return;
+    }
+
+    setSaving(true);
+    setMessage('');
+
+    const { error } = await supabase
+      .from('club_event_attendance')
+      .upsert(records, {
+        onConflict: 'event_id,user_id',
+      });
+
+    if (error) {
+      setMessage(
+        'Dochádzku sa nepodarilo uložiť: ' + error.message
+      );
     } else {
-      setMessage('Dochádzka bola uložená.');
+      setMessage(
+        `Dochádzka bola uložená pre ${records.length} členov.`
+      );
+
       await loadEventDetails(selectedEvent);
     }
+
+    setSaving(false);
   }
 
   async function updateEventStatus(event, nextStatus) {
@@ -353,7 +579,10 @@ function Calendar({ supabase, club, role, userId }) {
       completed: 'Naozaj chceš označiť tréning ako ukončený?',
     };
 
-    if (prompts[nextStatus] && !window.confirm(prompts[nextStatus])) return;
+    if (
+      prompts[nextStatus] &&
+      !window.confirm(prompts[nextStatus])
+    ) return;
 
     const { data, error } = await supabase
       .from('club_events')
@@ -364,7 +593,9 @@ function Calendar({ supabase, club, role, userId }) {
       .single();
 
     if (error) {
-      setMessage('Stav tréningu sa nepodarilo zmeniť: ' + error.message);
+      setMessage(
+        'Stav tréningu sa nepodarilo zmeniť: ' + error.message
+      );
       return;
     }
 
@@ -374,15 +605,19 @@ function Calendar({ supabase, club, role, userId }) {
       current.map(item => item.id === data.id ? data : item)
     );
 
-    setMessage(nextStatus === 'in_progress'
-      ? 'Tréning bol spustený.'
-      : 'Tréning bol označený ako ukončený.');
+    setMessage(
+      nextStatus === 'in_progress'
+        ? 'Tréning bol spustený.'
+        : 'Tréning bol označený ako ukončený.'
+    );
   }
 
   async function cancelEvent(event) {
     if (!canManage || !event) return;
 
-    const confirmed = window.confirm('Naozaj chceš zrušiť tento termín?');
+    const confirmed = window.confirm(
+      'Naozaj chceš zrušiť tento termín?'
+    );
 
     if (!confirmed) return;
 
@@ -392,10 +627,15 @@ function Calendar({ supabase, club, role, userId }) {
     );
 
     if (error) {
-      setMessage('Termín sa nepodarilo zrušiť: ' + error.message);
+      setMessage(
+        'Termín sa nepodarilo zrušiť: ' + error.message
+      );
     } else {
       setMessage('Termín bol zrušený.');
+
+      detailRequest.current += 1;
       setSelectedEvent(null);
+
       await loadEvents();
     }
   }
@@ -409,7 +649,15 @@ function Calendar({ supabase, club, role, userId }) {
     }));
   }
 
+  function closeEventDetails() {
+    detailRequest.current += 1;
+    setSelectedEvent(null);
+    setDetailsLoading(false);
+  }
+
   function changeMonth(amount) {
+    detailRequest.current += 1;
+
     setMonth(current => new Date(
       current.getFullYear(),
       current.getMonth() + amount,
@@ -431,11 +679,14 @@ function Calendar({ supabase, club, role, userId }) {
   function formatDate(value) {
     if (!value) return '';
 
-    return new Date(`${value}T12:00:00`).toLocaleDateString('sk-SK', {
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
-    });
+    return new Date(`${value}T12:00:00`).toLocaleDateString(
+      'sk-SK',
+      {
+        day: 'numeric',
+        month: 'long',
+        year: 'numeric',
+      }
+    );
   }
 
   const monthName = month.toLocaleDateString('sk-SK', {
@@ -459,7 +710,9 @@ function Calendar({ supabase, club, role, userId }) {
               setForm({
                 ...emptyForm,
                 date: dateKey(new Date()),
-                until: dateKey(new Date(Date.now() + 90 * 86400000)),
+                until: dateKey(
+                  new Date(Date.now() + 90 * 86400000)
+                ),
               });
 
               setShowForm(true);
@@ -473,6 +726,7 @@ function Calendar({ supabase, club, role, userId }) {
       {message && (
         <div className="sp-cal-message" role="status">
           <span>{message}</span>
+
           <button
             onClick={() => setMessage('')}
             aria-label="Zavrieť správu"
@@ -541,7 +795,9 @@ function Calendar({ supabase, club, role, userId }) {
                   <span
                     className={`sp-cal-dot ${item.status} ${item.event_type}`}
                     key={item.id}
-                    title={`${item.title} – ${statusLabels[item.status] || item.status}`}
+                    title={`${item.title} – ${
+                      statusLabels[item.status] || item.status
+                    }`}
                   >
                     {item.title}
                   </span>
@@ -593,12 +849,17 @@ function Calendar({ supabase, club, role, userId }) {
               >
                 <div className="sp-cal-event-date">
                   <strong>
-                    {new Date(`${event.occurrence_date}T12:00:00`).getDate()}
+                    {new Date(
+                      `${event.occurrence_date}T12:00:00`
+                    ).getDate()}
                   </strong>
 
                   <small>
-                    {new Date(`${event.occurrence_date}T12:00:00`)
-                      .toLocaleDateString('sk-SK', { month: 'short' })}
+                    {new Date(
+                      `${event.occurrence_date}T12:00:00`
+                    ).toLocaleDateString('sk-SK', {
+                      month: 'short',
+                    })}
                   </small>
                 </div>
 
@@ -617,7 +878,9 @@ function Calendar({ supabase, club, role, userId }) {
                   )}
 
                   <small className="sp-cal-event-type">
-                    {event.event_type === 'training' ? 'Tréning' : 'Udalosť'}
+                    {event.event_type === 'training'
+                      ? 'Tréning'
+                      : 'Udalosť'}
                   </small>
                 </div>
 
@@ -633,7 +896,7 @@ function Calendar({ supabase, club, role, userId }) {
       {selectedEvent && (
         <div
           className="sp-cal-overlay"
-          onClick={() => setSelectedEvent(null)}
+          onClick={closeEventDetails}
         >
           <div
             className="sp-cal-modal"
@@ -651,7 +914,7 @@ function Calendar({ supabase, club, role, userId }) {
               </div>
 
               <button
-                onClick={() => setSelectedEvent(null)}
+                onClick={closeEventDetails}
                 aria-label="Zavrieť"
               >
                 ×
@@ -680,120 +943,346 @@ function Calendar({ supabase, club, role, userId }) {
               </span>
             </div>
 
-            {selectedEvent.description && (
-              <p className="sp-cal-description">
-                {selectedEvent.description}
-              </p>
-            )}
-
-            {selectedEvent.status === 'cancelled' ? (
-              <p className="sp-cal-warning">
-                Tento termín bol zrušený.
+            {detailsLoading ? (
+              <p className="sp-cal-empty">
+                Načítavam údaje tréningu…
               </p>
             ) : (
               <>
-                <div className="sp-cal-subsection">
-                  <h3>
-                    <Users size={17} /> Tvoja účasť
-                  </h3>
+                {selectedEvent.description && (
+                  <p className="sp-cal-description">
+                    {selectedEvent.description}
+                  </p>
+                )}
 
-                  <div className="sp-cal-choice-row">
-                    {Object.entries(responseLabels).map(([value, label]) => {
-                      const Icon =
-                        value === 'attending'
-                          ? CheckCircle2
-                          : value === 'not_attending'
-                            ? XCircle
-                            : HelpCircle;
-
-                      return (
-                        <button
-                          key={value}
-                          className={myResponse === value ? 'active' : ''}
-                          onClick={() => setMyResponse(value)}
-                        >
-                          <Icon size={16} /> {label}
-                        </button>
-                      );
-                    })}
-                  </div>
-
-                  <button
-                    className="sp-primary sp-cal-save"
-                    onClick={saveResponse}
-                  >
-                    Potvrdiť účasť
-                  </button>
-                </div>
-
-                {canManage && (
+                {selectedEvent.status === 'cancelled' ? (
+                  <p className="sp-cal-warning">
+                    Tento termín bol zrušený.
+                  </p>
+                ) : (
                   <>
                     <div className="sp-cal-subsection">
                       <h3>
-                        <ClipboardCheck size={17} /> Evidencia dochádzky
+                        <Users size={17} /> Tvoja účasť
                       </h3>
 
-                      <p className="sp-cal-hint">
-                        Skutočnú dochádzku zaznamenáva organizátor po tréningu.
-                      </p>
-
                       <div className="sp-cal-choice-row">
-                        {Object.entries(attendanceLabels).map(([value, label]) => (
-                          <button
-                            key={value}
-                            className={myAttendance === value ? 'active' : ''}
-                            onClick={() => setMyAttendance(value)}
-                          >
-                            {label}
-                          </button>
-                        ))}
+                        {Object.entries(responseLabels).map(
+                          ([value, label]) => {
+                            const Icon =
+                              value === 'attending'
+                                ? CheckCircle2
+                                : value === 'not_attending'
+                                  ? XCircle
+                                  : HelpCircle;
+
+                            return (
+                              <button
+                                key={value}
+                                className={
+                                  myResponse === value ? 'active' : ''
+                                }
+                                onClick={() => setMyResponse(value)}
+                              >
+                                <Icon size={16} /> {label}
+                              </button>
+                            );
+                          }
+                        )}
                       </div>
 
                       <button
-                        className="sp-outline sp-cal-save"
-                        onClick={saveMyAttendance}
+                        className="sp-primary sp-cal-save"
+                        onClick={saveResponse}
+                        disabled={saving}
                       >
-                        Uložiť moju dochádzku
+                        Potvrdiť účasť
                       </button>
                     </div>
 
-                    <div className="sp-cal-subsection">
-                      <h3>Prehľad odpovedí členov</h3>
+                    {canManage && (
+                      <>
+                        <div className="sp-cal-subsection">
+                          <h3>
+                            <ClipboardCheck size={17} />
+                            Evidencia dochádzky členov
+                          </h3>
 
-                      <div className="sp-cal-counts">
-                        <span>
-                          Prídu: {responses.filter(r => r.response === 'attending').length}
-                        </span>
+                          <p className="sp-cal-hint">
+                            Vyber pri každom členovi skutočný stav
+                            dochádzky. Zmeny môžeš uložiť jednotlivo
+                            alebo naraz.
+                          </p>
 
-                        <span>
-                          Neprídu: {responses.filter(r => r.response === 'not_attending').length}
-                        </span>
+                          <div className="sp-cal-attendance-summary">
+                            <span>
+                              Členovia: {members.length}
+                            </span>
 
-                        <span>
-                          Nevedia: {responses.filter(r => r.response === 'maybe').length}
-                        </span>
-                      </div>
+                            <span>
+                              Prítomní: {
+                                Object.values(attendanceDraft)
+                                  .filter(v => v === 'present').length
+                              }
+                            </span>
 
-                      <h3>Zapísaná dochádzka</h3>
+                            <span>
+                              Neprítomní: {
+                                Object.values(attendanceDraft)
+                                  .filter(v => v === 'absent').length
+                              }
+                            </span>
 
-                      <div className="sp-cal-counts">
-                        <span>
-                          Prítomní: {attendance.filter(a => a.attendance_status === 'present').length}
-                        </span>
+                            <span>
+                              Ospravedlnení: {
+                                Object.values(attendanceDraft)
+                                  .filter(v => v === 'excused').length
+                              }
+                            </span>
+                          </div>
 
-                        <span>
-                          Neprítomní: {attendance.filter(a => a.attendance_status === 'absent').length}
-                        </span>
+                          {members.length === 0 ? (
+                            <p className="sp-cal-empty">
+                              Klub nemá načítaných žiadnych členov.
+                            </p>
+                          ) : (
+                            <div className="sp-cal-roster">
+                              {members.map(member => {
+                                const currentStatus =
+                                  attendanceDraft[member.user_id] || '';
 
-                        <span>
-                          Ospravedlnení: {attendance.filter(a => a.attendance_status === 'excused').length}
-                        </span>
-                      </div>
+                                const savedRecord = attendance.find(
+                                  item =>
+                                    item.user_id === member.user_id
+                                );
 
-                      <p className="sp-cal-hint">
-                        Počty vychádzajú zo záznamov v databáze. Mená členov vyžadujú prepojenie na používateľské profily.
-                      </p>
-                    </div>
+                                return (
+                                  <div
+                                    className="sp-cal-roster-row"
+                                    key={member.user_id}
+                                  >
+                                    <div className="sp-cal-roster-person">
+                                      <strong>
+                                        {getMemberName(member)}
+                                      </strong>
+
+                                      <small>
+                                        {getMemberSubtitle(member)}
+                                      </small>
+
+                                      <span className="sp-cal-member-role">
+                                        {member.role}
+                                        {member.active === false
+                                          ? ' · Neaktívny hráč'
+                                          : ''}
+                                      </span>
+                                    </div>
+
+                                    <div className="sp-cal-roster-controls">
+                                      <select
+                                        value={currentStatus}
+                                        onChange={e =>
+                                          updateAttendanceDraft(
+                                            member.user_id,
+                                            e.target.value
+                                          )
+                                        }
+                                      >
+                                        <option value="">
+                                          Nezaznamenané
+                                        </option>
+
+                                        {Object.entries(
+                                          attendanceLabels
+                                        ).map(([value, label]) => (
+                                          <option
+                                            key={value}
+                                            value={value}
+                                          >
+                                            {label}
+                                          </option>
+                                        ))}
+                                      </select>
+
+                                      <input
+                                        className="sp-cal-note"
+                                        value={
+                                          attendanceNotes[member.user_id] || ''
+                                        }
+                                        onChange={e =>
+                                          updateAttendanceNote(
+                                            member.user_id,
+                                            e.target.value
+                                          )
+                                        }
+                                        placeholder="Poznámka (nepovinná)"
+                                      />
+
+                                      <button
+                                        className="sp-outline sp-cal-row-save"
+                                        disabled={
+                                          saving || !currentStatus
+                                        }
+                                        onClick={() =>
+                                          saveMemberAttendance(member)
+                                        }
+                                      >
+                                        Uložiť
+                                      </button>
+                                    </div>
+
+                                    {savedRecord && (
+                                      <small className="sp-cal-saved">
+                                        Uložené v databáze
+                                      </small>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+
+                          <button
+                            className="sp-primary sp-cal-save"
+                            onClick={saveAllAttendance}
+                            disabled={saving || members.length === 0}
+                          >
+                            {saving
+                              ? 'Ukladám…'
+                              : 'Uložiť dochádzku všetkých vybraných členov'}
+                          </button>
+                        </div>
+
+                        <div className="sp-cal-subsection">
+                          <h3>Prehľad odpovedí členov</h3>
+
+                          <div className="sp-cal-counts">
+                            <span>
+                              Prídu: {
+                                responses.filter(
+                                  r => r.response === 'attending'
+                                ).length
+                              }
+                            </span>
+
+                            <span>
+                              Neprídu: {
+                                responses.filter(
+                                  r => r.response === 'not_attending'
+                                ).length
+                              }
+                            </span>
+
+                            <span>
+                              Nevedia: {
+                                responses.filter(
+                                  r => r.response === 'maybe'
+                                ).length
+                              }
+                            </span>
+                          </div>
+
+                          <div className="sp-cal-name-list">
+                            {responses.length === 0 ? (
+                              <p className="sp-cal-hint">
+                                Zatiaľ nikto nepotvrdil svoju účasť.
+                              </p>
+                            ) : (
+                              responses.map(response => {
+                                const member = getMemberForUser(
+                                  response.user_id
+                                );
+
+                                return (
+                                  <div
+                                    className="sp-cal-name-row"
+                                    key={response.id}
+                                  >
+                                    <strong>
+                                      {member
+                                        ? getMemberName(member)
+                                        : 'Používateľ mimo zoznamu členov'}
+                                    </strong>
+
+                                    <span>
+                                      {responseLabels[response.response] ||
+                                        response.response}
+                                    </span>
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+
+                          <h3>Zapísaná dochádzka</h3>
+
+                          <div className="sp-cal-counts">
+                            <span>
+                              Prítomní: {
+                                attendance.filter(
+                                  a => a.attendance_status === 'present'
+                                ).length
+                              }
+                            </span>
+
+                            <span>
+                              Neprítomní: {
+                                attendance.filter(
+                                  a => a.attendance_status === 'absent'
+                                ).length
+                              }
+                            </span>
+
+                            <span>
+                              Ospravedlnení: {
+                                attendance.filter(
+                                  a => a.attendance_status === 'excused'
+                                ).length
+                              }
+                            </span>
+                          </div>
+
+                          <div className="sp-cal-name-list">
+                            {attendance.length === 0 ? (
+                              <p className="sp-cal-hint">
+                                Zatiaľ nie je zaznamenaná žiadna dochádzka.
+                              </p>
+                            ) : (
+                              attendance.map(record => {
+                                const member = getMemberForUser(
+                                  record.user_id
+                                );
+
+                                return (
+                                  <div
+                                    className="sp-cal-name-row"
+                                    key={record.id}
+                                  >
+                                    <div>
+                                      <strong>
+                                        {member
+                                          ? getMemberName(member)
+                                          : 'Používateľ mimo zoznamu členov'}
+                                      </strong>
+
+                                      {record.note && (
+                                        <small>{record.note}</small>
+                                      )}
+                                    </div>
+
+                                    <span>
+                                      {attendanceLabels[
+                                        record.attendance_status
+                                      ] || record.attendance_status}
+                                    </span>
+                                  </div>
+                                );
+                              })
+                            )}
+                          </div>
+                        </div>
+                      </>
+                    )}
                   </>
                 )}
               </>
@@ -805,7 +1294,12 @@ function Calendar({ supabase, club, role, userId }) {
                 <div className="sp-cal-management-actions">
                   <button
                     className="sp-cal-start"
-                    onClick={() => updateEventStatus(selectedEvent, 'in_progress')}
+                    onClick={() =>
+                      updateEventStatus(
+                        selectedEvent,
+                        'in_progress'
+                      )
+                    }
                   >
                     <Play size={16} /> Spustiť tréning
                   </button>
@@ -824,7 +1318,9 @@ function Calendar({ supabase, club, role, userId }) {
               selectedEvent.status === 'in_progress' && (
                 <button
                   className="sp-cal-complete"
-                  onClick={() => updateEventStatus(selectedEvent, 'completed')}
+                  onClick={() =>
+                    updateEventStatus(selectedEvent, 'completed')
+                  }
                 >
                   <Flag size={16} /> Ukončiť tréning
                 </button>
@@ -877,7 +1373,10 @@ function Calendar({ supabase, club, role, userId }) {
             <label>Názov
               <input
                 value={form.title}
-                onChange={e => setForm({ ...form, title: e.target.value })}
+                onChange={e => setForm({
+                  ...form,
+                  title: e.target.value,
+                })}
                 placeholder="Napr. Pravidelný tréning"
                 required
               />
@@ -886,7 +1385,10 @@ function Calendar({ supabase, club, role, userId }) {
             <label>Popis
               <textarea
                 value={form.description}
-                onChange={e => setForm({ ...form, description: e.target.value })}
+                onChange={e => setForm({
+                  ...form,
+                  description: e.target.value,
+                })}
                 rows={3}
                 placeholder="Podrobnosti o tréningu alebo udalosti..."
               />
@@ -895,7 +1397,10 @@ function Calendar({ supabase, club, role, userId }) {
             <label>Miesto
               <input
                 value={form.location}
-                onChange={e => setForm({ ...form, location: e.target.value })}
+                onChange={e => setForm({
+                  ...form,
+                  location: e.target.value,
+                })}
                 placeholder="Miesto konania"
               />
             </label>
@@ -904,7 +1409,10 @@ function Calendar({ supabase, club, role, userId }) {
               <input
                 type="date"
                 value={form.date}
-                onChange={e => setForm({ ...form, date: e.target.value })}
+                onChange={e => setForm({
+                  ...form,
+                  date: e.target.value,
+                })}
                 required
               />
             </label>
@@ -914,7 +1422,10 @@ function Calendar({ supabase, club, role, userId }) {
                 <input
                   type="time"
                   value={form.start_time}
-                  onChange={e => setForm({ ...form, start_time: e.target.value })}
+                  onChange={e => setForm({
+                    ...form,
+                    start_time: e.target.value,
+                  })}
                   required
                 />
               </label>
@@ -923,7 +1434,10 @@ function Calendar({ supabase, club, role, userId }) {
                 <input
                   type="time"
                   value={form.end_time}
-                  onChange={e => setForm({ ...form, end_time: e.target.value })}
+                  onChange={e => setForm({
+                    ...form,
+                    end_time: e.target.value,
+                  })}
                   required
                 />
               </label>
@@ -952,7 +1466,9 @@ function Calendar({ supabase, club, role, userId }) {
                     <button
                       type="button"
                       key={day}
-                      className={form.weekdays.includes(day) ? 'active' : ''}
+                      className={
+                        form.weekdays.includes(day) ? 'active' : ''
+                      }
                       onClick={() => toggleWeekday(day)}
                     >
                       {label}
@@ -965,13 +1481,17 @@ function Calendar({ supabase, club, role, userId }) {
                     type="date"
                     min={form.date}
                     value={form.until}
-                    onChange={e => setForm({ ...form, until: e.target.value })}
+                    onChange={e => setForm({
+                      ...form,
+                      until: e.target.value,
+                    })}
                     required
                   />
                 </label>
 
                 <p className="sp-cal-hint">
-                  Termíny sa vytvoria do zvoleného dátumu. Neskôr bude možné sériu predĺžiť.
+                  Termíny sa vytvoria do zvoleného dátumu.
+                  Neskôr bude možné sériu predĺžiť.
                 </p>
               </>
             )}
@@ -1059,7 +1579,23 @@ function Calendar({ supabase, club, role, userId }) {
         .sp-cal-choice-row button.active,.sp-cal-weekday-select button.active { border-color:#d9b45c; color:#f1d58d; background:#26354a; }
         .sp-cal-save { margin-top:12px; }
         .sp-cal-counts { display:flex; flex-wrap:wrap; gap:8px; }
-        .sp-cal-counts span { background:#172944; padding:8px; border-radius:7px; font-size:11px; color:#dce5f2; }
+        .sp-cal-counts span,.sp-cal-attendance-summary span { background:#172944; padding:8px; border-radius:7px; font-size:11px; color:#dce5f2; }
+        .sp-cal-attendance-summary { display:flex; flex-wrap:wrap; gap:7px; margin:12px 0; }
+        .sp-cal-roster { display:grid; gap:9px; margin-top:12px; }
+        .sp-cal-roster-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(190px,1fr); gap:9px; padding:12px; background:#0d192b; border:1px solid rgba(255,255,255,.08); border-radius:10px; }
+        .sp-cal-roster-person { display:grid; gap:4px; min-width:0; }
+        .sp-cal-roster-person strong { font-size:13px; }
+        .sp-cal-roster-person small,.sp-cal-name-row small { color:#9eacc1; font-size:10px; overflow-wrap:anywhere; }
+        .sp-cal-member-role { color:#d9b45c; font-size:10px; }
+        .sp-cal-roster-controls { display:grid; gap:7px; }
+        .sp-cal-roster-controls select,.sp-cal-note { width:100%; box-sizing:border-box; border:1px solid rgba(255,255,255,.14); border-radius:7px; padding:8px; background:#172944; color:#f5f7fb; font:inherit; font-size:11px; }
+        .sp-cal-row-save { padding:7px 10px; font-size:11px; }
+        .sp-cal-row-save:disabled { opacity:.45; }
+        .sp-cal-saved { grid-column:1/-1; color:#8fd2ac; font-size:10px; }
+        .sp-cal-name-list { display:grid; gap:7px; margin:10px 0 18px; }
+        .sp-cal-name-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:9px 11px; border-radius:8px; background:#0d192b; font-size:11px; }
+        .sp-cal-name-row>div { display:grid; gap:4px; }
+        .sp-cal-name-row>span { color:#f1d58d; text-align:right; }
         .sp-cal-management-actions { display:grid; grid-template-columns:1fr 1fr; gap:9px; }
         .sp-cal-start,.sp-cal-complete,.sp-cal-cancel { display:flex; align-items:center; justify-content:center; gap:8px; padding:11px; border-radius:9px; }
         .sp-cal-start { border:1px solid #b48b37; background:#4a3919; color:#ffe09a; }
@@ -1085,6 +1621,7 @@ function Calendar({ supabase, club, role, userId }) {
           .sp-cal-status { display:none; }
           .sp-cal-form-grid,.sp-cal-management-actions { grid-template-columns:1fr; }
           .sp-cal-modal { padding:17px; }
+          .sp-cal-roster-row { grid-template-columns:1fr; }
         }
       `}</style>
     </div>
