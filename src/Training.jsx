@@ -3,7 +3,14 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from './supabase';
 import './Training.css';
 
-export default function Training({ clubId, onBack }) {
+export default function Training({
+  club,
+  clubId: providedClubId,
+  onBack
+}) {
+  // ID klubu získame z App.jsx alebo priamo z clubId
+  const clubId = providedClubId || club?.id || club?.club_id;
+
   const [sessions, setSessions] = useState([]);
   const [players, setPlayers] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -19,11 +26,18 @@ export default function Training({ clubId, onBack }) {
   const [message, setMessage] = useState('');
 
   useEffect(() => {
-    if (clubId) loadInitial();
+    if (clubId) {
+      loadInitial();
+    } else {
+      setMessage('Nepodarilo sa načítať ID klubu.');
+    }
   }, [clubId]);
 
   async function loadInitial() {
+    if (!clubId) return;
+
     setLoading(true);
+    setMessage('');
 
     const [s, p] = await Promise.all([
       supabase
@@ -40,16 +54,27 @@ export default function Training({ clubId, onBack }) {
         .order('name')
     ]);
 
-    if (s.error) setMessage(s.error.message);
-    else setSessions(s.data || []);
+    if (s.error) {
+      setMessage(s.error.message);
+    } else {
+      setSessions(s.data || []);
+    }
 
-    if (p.error) setMessage(p.error.message);
-    else setPlayers(p.data || []);
+    if (p.error) {
+      setMessage(p.error.message);
+    } else {
+      setPlayers(p.data || []);
+    }
 
     setLoading(false);
   }
 
   async function createTraining() {
+    if (!clubId) {
+      setMessage('Chýba ID klubu. Obnov aplikáciu a skús to znova.');
+      return;
+    }
+
     if (!sessionName.trim()) {
       setMessage('Zadaj názov tréningu.');
       return;
@@ -76,7 +101,12 @@ export default function Training({ clubId, onBack }) {
     }
 
     const boardRows = Array.from(
-      { length: Math.max(1, Math.min(20, Number(boardCount) || 1)) },
+      {
+        length: Math.max(
+          1,
+          Math.min(20, Number(boardCount) || 1)
+        )
+      },
       (_, i) => ({
         session_id: data.id,
         board_number: i + 1,
@@ -89,14 +119,20 @@ export default function Training({ clubId, onBack }) {
       .insert(boardRows);
 
     if (boardError) {
-      setMessage(boardError.message);
+      setMessage(
+        'Tréning bol vytvorený, ale terče sa nepodarilo vytvoriť: ' +
+        boardError.message
+      );
       setLoading(false);
+      await loadInitial();
       return;
     }
 
     setSessionName('Klubový tréning');
+
     await loadInitial();
     await openTraining(data);
+
     setLoading(false);
   }
 
@@ -125,14 +161,23 @@ export default function Training({ clubId, onBack }) {
         .order('created_at')
     ]);
 
-    if (b.error) setMessage(b.error.message);
-    else setBoards(b.data || []);
+    if (b.error) {
+      setMessage(b.error.message);
+    } else {
+      setBoards(b.data || []);
+    }
 
-    if (p.error) setMessage(p.error.message);
-    else setTrainingPlayers(p.data || []);
+    if (p.error) {
+      setMessage(p.error.message);
+    } else {
+      setTrainingPlayers(p.data || []);
+    }
 
-    if (v.error) setMessage(v.error.message);
-    else setVisits(v.data || []);
+    if (v.error) {
+      setMessage(v.error.message);
+    } else {
+      setVisits(v.data || []);
+    }
 
     setLoading(false);
   }
@@ -143,7 +188,7 @@ export default function Training({ clubId, onBack }) {
     if (!playerId || !selected) return;
 
     const alreadyAdded = trainingPlayers.some(
-      p => p.player_id === playerId
+      p => p.player_id === playerId && p.status === 'active'
     );
 
     if (alreadyAdded) {
@@ -166,7 +211,11 @@ export default function Training({ clubId, onBack }) {
       return;
     }
 
-    setNewBoardPlayer(old => ({ ...old, [boardId]: '' }));
+    setNewBoardPlayer(old => ({
+      ...old,
+      [boardId]: ''
+    }));
+
     await openTraining(selected);
   }
 
@@ -212,7 +261,11 @@ export default function Training({ clubId, onBack }) {
 
     const score = Number(raw);
 
-    if (!Number.isInteger(score) || score < 0 || score > 180) {
+    if (
+      !Number.isInteger(score) ||
+      score < 0 ||
+      score > 180
+    ) {
       setMessage('Skóre musí byť celé číslo od 0 do 180.');
       return;
     }
@@ -224,8 +277,9 @@ export default function Training({ clubId, onBack }) {
     const previous = playerVisits[playerVisits.length - 1];
     const remainingBefore = previous?.remaining_after ?? 501;
 
-    const isBust = score > remainingBefore ||
-      (remainingBefore - score === 1);
+    const isBust =
+      score > remainingBefore ||
+      remainingBefore - score === 1;
 
     const remainingAfter = isBust
       ? remainingBefore
@@ -251,7 +305,11 @@ export default function Training({ clubId, onBack }) {
       return;
     }
 
-    setNewScores(old => ({ ...old, [player.id]: '' }));
+    setNewScores(old => ({
+      ...old,
+      [player.id]: ''
+    }));
+
     await openTraining(selected);
   }
 
@@ -281,11 +339,15 @@ export default function Training({ clubId, onBack }) {
         v => v.training_player_id === player.id
       );
 
-      const scoredVisits = playerVisits.filter(v => !v.is_bust);
+      const scoredVisits = playerVisits.filter(
+        v => !v.is_bust
+      );
+
       const points = scoredVisits.reduce(
-        (sum, v) => sum + v.visit_score,
+        (sum, v) => sum + Number(v.visit_score || 0),
         0
       );
+
       const darts = playerVisits.reduce(
         (sum, v) => sum + (v.darts_thrown || 0),
         0
@@ -302,7 +364,11 @@ export default function Training({ clubId, onBack }) {
   }, [trainingPlayers, visits]);
 
   if (loading && !selected && sessions.length === 0) {
-    return <div className="training-page">Načítavam tréningy…</div>;
+    return (
+      <div className="training-page">
+        Načítavam tréningy…
+      </div>
+    );
   }
 
   return (
@@ -315,14 +381,19 @@ export default function Training({ clubId, onBack }) {
         </div>
 
         {onBack && (
-          <button className="training-secondary" onClick={onBack}>
+          <button
+            className="training-secondary"
+            onClick={onBack}
+          >
             Späť
           </button>
         )}
       </header>
 
       {message && (
-        <div className="training-message">{message}</div>
+        <div className="training-message">
+          {message}
+        </div>
       )}
 
       {!selected ? (
@@ -348,10 +419,10 @@ export default function Training({ clubId, onBack }) {
 
             <button
               className="training-primary"
-              disabled={loading}
+              disabled={loading || !clubId}
               onClick={createTraining}
             >
-              Vytvoriť tréning
+              {loading ? 'Vytváram…' : 'Vytvoriť tréning'}
             </button>
           </section>
 
@@ -362,29 +433,34 @@ export default function Training({ clubId, onBack }) {
               <p className="training-muted">
                 Zatiaľ nemáš vytvorený žiadny tréning.
               </p>
-            ) : sessions.map(session => (
-              <button
-                className="training-session-card"
-                key={session.id}
-                onClick={() => openTraining(session)}
-              >
-                <span>
-                  <strong>{session.name}</strong>
-                  <small>
-                    {new Date(session.training_date).toLocaleString('sk-SK')}
-                  </small>
-                </span>
-                <span className={`training-status ${session.status}`}>
-                  {session.status === 'active'
-                    ? 'Prebieha'
-                    : session.status === 'finished'
-                      ? 'Ukončený'
-                      : session.status === 'cancelled'
-                        ? 'Zrušený'
-                        : 'Naplánovaný'}
-                </span>
-              </button>
-            ))}
+            ) : (
+              sessions.map(session => (
+                <button
+                  className="training-session-card"
+                  key={session.id}
+                  onClick={() => openTraining(session)}
+                >
+                  <span>
+                    <strong>{session.name}</strong>
+                    <small>
+                      {new Date(
+                        session.training_date
+                      ).toLocaleString('sk-SK')}
+                    </small>
+                  </span>
+
+                  <span className={`training-status ${session.status}`}>
+                    {session.status === 'active'
+                      ? 'Prebieha'
+                      : session.status === 'finished'
+                        ? 'Ukončený'
+                        : session.status === 'cancelled'
+                          ? 'Zrušený'
+                          : 'Naplánovaný'}
+                  </span>
+                </button>
+              ))
+            )}
           </section>
         </>
       ) : (
@@ -400,9 +476,13 @@ export default function Training({ clubId, onBack }) {
               >
                 ← Všetky tréningy
               </button>
+
               <h2>{selected.name}</h2>
+
               <p>
-                {new Date(selected.training_date).toLocaleString('sk-SK')}
+                {new Date(
+                  selected.training_date
+                ).toLocaleString('sk-SK')}
               </p>
             </div>
 
@@ -419,30 +499,43 @@ export default function Training({ clubId, onBack }) {
           <div className="training-board-grid">
             {boards.map(board => {
               const boardPlayers = trainingPlayers.filter(
-                p => p.board_id === board.id && p.status === 'active'
+                p =>
+                  p.board_id === board.id &&
+                  p.status === 'active'
               );
 
               return (
-                <section className="training-board" key={board.id}>
+                <section
+                  className="training-board"
+                  key={board.id}
+                >
                   <div className="training-board-title">
                     <span className="training-board-number">
                       {board.board_number}
                     </span>
+
                     <div>
-                      <h3>{board.name || `Terč ${board.board_number}`}</h3>
-                      <small>{boardPlayers.length} aktívnych hráčov</small>
+                      <h3>
+                        {board.name || `Terč ${board.board_number}`}
+                      </h3>
+                      <small>
+                        {boardPlayers.length} aktívnych hráčov
+                      </small>
                     </div>
                   </div>
 
                   <div className="training-add-player">
                     <select
                       value={newBoardPlayer[board.id] || ''}
-                      onChange={e => setNewBoardPlayer(old => ({
-                        ...old,
-                        [board.id]: e.target.value
-                      }))}
+                      onChange={e =>
+                        setNewBoardPlayer(old => ({
+                          ...old,
+                          [board.id]: e.target.value
+                        }))
+                      }
                     >
                       <option value="">Vyber hráča</option>
+
                       {players.map(p => (
                         <option key={p.id} value={p.id}>
                           {p.name}
@@ -469,22 +562,30 @@ export default function Training({ clubId, onBack }) {
                     const stats = playerStats.find(
                       p => p.id === player.id
                     );
+
                     const lastVisit = visits
-                      .filter(v => v.training_player_id === player.id)
+                      .filter(
+                        v => v.training_player_id === player.id
+                      )
                       .slice(-1)[0];
 
                     return (
-                      <div className="training-player-card" key={player.id}>
+                      <div
+                        className="training-player-card"
+                        key={player.id}
+                      >
                         <div className="training-player-top">
                           <div>
                             <strong>
                               {player.players?.name || 'Hráč'}
                             </strong>
+
                             <small>
                               {stats?.visitCount || 0} návštev ·
                               {' '}{stats?.points || 0} bodov
                             </small>
                           </div>
+
                           <strong className="training-average">
                             {(stats?.average || 0).toFixed(2)}
                           </strong>
@@ -494,6 +595,7 @@ export default function Training({ clubId, onBack }) {
                           <span>
                             Zostáva: {lastVisit?.remaining_after ?? 501}
                           </span>
+
                           <span>
                             Šípky: {stats?.darts || 0}
                           </span>
@@ -508,11 +610,14 @@ export default function Training({ clubId, onBack }) {
                                 max="180"
                                 placeholder="Skóre 0–180"
                                 value={newScores[player.id] ?? ''}
-                                onChange={e => setNewScores(old => ({
-                                  ...old,
-                                  [player.id]: e.target.value
-                                }))}
+                                onChange={e =>
+                                  setNewScores(old => ({
+                                    ...old,
+                                    [player.id]: e.target.value
+                                  }))
+                                }
                               />
+
                               <button
                                 onClick={() => recordVisit(player, board)}
                               >
@@ -525,17 +630,28 @@ export default function Training({ clubId, onBack }) {
                                 defaultValue=""
                                 onChange={e => {
                                   if (e.target.value) {
-                                    movePlayer(player.id, e.target.value);
+                                    movePlayer(
+                                      player.id,
+                                      e.target.value
+                                    );
                                     e.target.value = '';
                                   }
                                 }}
                               >
-                                <option value="">Presunúť na terč…</option>
-                                {boards.filter(b => b.id !== board.id).map(b => (
-                                  <option key={b.id} value={b.id}>
-                                    {b.name || `Terč ${b.board_number}`}
-                                  </option>
-                                ))}
+                                <option value="">
+                                  Presunúť na terč…
+                                </option>
+
+                                {boards
+                                  .filter(b => b.id !== board.id)
+                                  .map(b => (
+                                    <option
+                                      key={b.id}
+                                      value={b.id}
+                                    >
+                                      {b.name || `Terč ${b.board_number}`}
+                                    </option>
+                                  ))}
                               </select>
 
                               <button
@@ -557,6 +673,7 @@ export default function Training({ clubId, onBack }) {
 
           <section className="training-summary">
             <h2>Štatistiky tréningu</h2>
+
             <div className="training-table-wrap">
               <table>
                 <thead>
@@ -568,6 +685,7 @@ export default function Training({ clubId, onBack }) {
                     <th>Priemer / 3 šípky</th>
                   </tr>
                 </thead>
+
                 <tbody>
                   {playerStats.map(p => (
                     <tr key={p.id}>
