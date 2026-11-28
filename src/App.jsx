@@ -1,9 +1,11 @@
+
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase, supabaseConfigured } from './supabase';
 import LiveScore from './LiveScore';
 import PublicMatch from './PublicMatch';
 import Statistics from './Statistics';
 import Members from './Members';
+import Calendar from './Calendar';
 import {
   LayoutDashboard, Users, Trophy, Target, BarChart3, Settings,
   LogOut, Plus, Search, CalendarDays, MapPin, Pencil,
@@ -15,6 +17,7 @@ const NAV = [
   ['Hráči', Users],
   ['Turnaje', Trophy],
   ['Zápasy', Target],
+  ['Kalendár', CalendarDays],
   ['Štatistiky', BarChart3],
   ['Členovia klubu', Shield],
   ['Nastavenia', Settings],
@@ -939,6 +942,15 @@ function App() {
                 </>
               )}
             </>
+          )}
+
+          {page === 'Kalendár' && (
+            <Calendar
+              supabase={supabase}
+              club={club}
+              role={role}
+              userId={session.user.id}
+            />
           )}
 
           {page === 'Štatistiky' && (
