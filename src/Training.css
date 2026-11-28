@@ -1,0 +1,327 @@
+
+.training-page {
+  color: var(--text, #f5f6fa);
+  padding: 22px;
+  max-width: 1500px;
+  margin: 0 auto;
+}
+
+.training-header,
+.training-active-heading,
+.training-board-title,
+.training-player-top,
+.training-player-score {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.training-header {
+  margin-bottom: 26px;
+}
+
+.training-eyebrow {
+  color: #e5a52e;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 2px;
+}
+
+.training-header h1 {
+  margin: 5px 0;
+  font-size: 32px;
+}
+
+.training-header p,
+.training-active-heading p,
+.training-muted {
+  color: var(--muted, #9ba3b4);
+}
+
+.training-create,
+.training-list,
+.training-board,
+.training-summary {
+  background: var(--card, #171d2a);
+  border: 1px solid var(--border, #30394b);
+  border-radius: 16px;
+  padding: 20px;
+  margin-bottom: 20px;
+}
+
+.training-create {
+  max-width: 560px;
+}
+
+.training-create h2,
+.training-list h2,
+.training-summary h2 {
+  margin-top: 0;
+}
+
+.training-create label {
+  display: block;
+  margin: 16px 0 7px;
+  color: var(--muted, #aab1bf);
+  font-size: 13px;
+}
+
+.training-create input,
+.training-add-player select,
+.training-score-entry input,
+.training-player-actions select {
+  width: 100%;
+  min-height: 44px;
+  padding: 10px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--border, #394255);
+  background: var(--input, #101622);
+  color: var(--text, #fff);
+  box-sizing: border-box;
+}
+
+.training-primary,
+.training-finish,
+.training-score-entry button,
+.training-add-player button {
+  border: 0;
+  border-radius: 9px;
+  padding: 12px 16px;
+  color: #fff;
+  background: #bd7b17;
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.training-primary {
+  width: 100%;
+  margin-top: 20px;
+}
+
+.training-secondary,
+.training-back-link {
+  border: 1px solid var(--border, #394255);
+  border-radius: 9px;
+  padding: 10px 14px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.training-session-card {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 15px;
+  padding: 16px;
+  margin: 8px 0;
+  color: inherit;
+  background: var(--input, #101622);
+  border: 1px solid var(--border, #30394b);
+  border-radius: 10px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.training-session-card span:first-child {
+  display: grid;
+  gap: 6px;
+}
+
+.training-session-card small,
+.training-player-top small {
+  color: var(--muted, #9ba3b4);
+}
+
+.training-status {
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.training-status.active {
+  color: #4bd69b;
+}
+
+.training-status.finished {
+  color: #9ba3b4;
+}
+
+.training-status.cancelled {
+  color: #e27b7b;
+}
+
+.training-message {
+  padding: 12px 15px;
+  margin-bottom: 16px;
+  border-radius: 9px;
+  background: #472b28;
+  color: #ffd2c9;
+}
+
+.training-active-heading {
+  margin: 20px 0;
+}
+
+.training-active-heading h2 {
+  margin: 12px 0 5px;
+}
+
+.training-board-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 18px;
+  align-items: start;
+}
+
+.training-board {
+  margin: 0;
+}
+
+.training-board-number {
+  width: 42px;
+  height: 42px;
+  flex-shrink: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 12px;
+  background: #bd7b17;
+  color: white;
+  font-size: 20px;
+  font-weight: 900;
+}
+
+.training-board-title {
+  justify-content: flex-start;
+  margin-bottom: 18px;
+}
+
+.training-board-title h3 {
+  margin: 0 0 4px;
+}
+
+.training-board-title small {
+  color: var(--muted, #9ba3b4);
+}
+
+.training-add-player {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 15px;
+}
+
+.training-add-player select {
+  min-width: 0;
+  flex: 1;
+}
+
+.training-add-player button {
+  white-space: nowrap;
+}
+
+.training-player-card {
+  padding: 14px;
+  margin-top: 12px;
+  background: var(--input, #101622);
+  border: 1px solid var(--border, #30394b);
+  border-radius: 12px;
+}
+
+.training-player-top strong {
+  display: block;
+}
+
+.training-player-top small {
+  display: block;
+  margin-top: 5px;
+}
+
+.training-average {
+  color: #e5a52e;
+  font-size: 20px;
+}
+
+.training-player-score {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  color: var(--muted, #aab1bf);
+  font-size: 13px;
+  margin: 13px 0;
+}
+
+.training-score-entry {
+  display: flex;
+  gap: 8px;
+}
+
+.training-score-entry input {
+  min-width: 0;
+  flex: 1;
+}
+
+.training-player-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.training-player-actions select {
+  min-width: 0;
+  flex: 1;
+}
+
+.training-remove {
+  border: 1px solid #874b4b;
+  background: transparent;
+  color: #e9a0a0;
+  border-radius: 9px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+.training-finish {
+  background: #9b3737;
+}
+
+.training-table-wrap {
+  overflow-x: auto;
+}
+
+.training-summary table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 550px;
+}
+
+.training-summary th,
+.training-summary td {
+  padding: 12px;
+  border-bottom: 1px solid var(--border, #30394b);
+  text-align: left;
+}
+
+.training-summary th {
+  color: var(--muted, #aab1bf);
+  font-size: 12px;
+}
+
+@media (max-width: 600px) {
+  .training-page {
+    padding: 13px;
+  }
+
+  .training-header h1 {
+    font-size: 26px;
+  }
+
+  .training-active-heading {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .training-session-card {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
