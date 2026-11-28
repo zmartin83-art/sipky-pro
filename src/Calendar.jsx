@@ -1,9 +1,8 @@
-
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   CalendarDays, ChevronLeft, ChevronRight, Plus, Clock,
   MapPin, Users, CheckCircle2, XCircle, HelpCircle,
-  Pencil, Ban, ClipboardCheck, RefreshCw
+  Ban, ClipboardCheck, RefreshCw, Play, Flag
 } from 'lucide-react';
 
 const pad = value => String(value).padStart(2, '0');
@@ -11,12 +10,11 @@ const pad = value => String(value).padStart(2, '0');
 const dateKey = date =>
   `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 
-const isoWeekday = date => date.getDay() === 0 ? 7 : date.getDay();
-
 const emptyForm = {
   title: '',
   description: '',
   location: '',
+  event_type: 'training',
   date: dateKey(new Date()),
   start_time: '18:00',
   end_time: '20:00',
@@ -42,6 +40,13 @@ const attendanceLabels = {
   excused: 'Ospravedlnený',
 };
 
+const statusLabels = {
+  scheduled: 'Naplánované',
+  in_progress: 'Prebieha',
+  completed: 'Ukončené',
+  cancelled: 'Zrušené',
+};
+
 function Calendar({ supabase, club, role, userId }) {
   const [month, setMonth] = useState(() => {
     const now = new Date();
@@ -59,7 +64,6 @@ function Calendar({ supabase, club, role, userId }) {
   const [message, setMessage] = useState('');
   const [myResponse, setMyResponse] = useState('maybe');
   const [myAttendance, setMyAttendance] = useState('present');
-  const [attendanceMode, setAttendanceMode] = useState(false);
 
   const canManage = ['admin', 'organizer'].includes(
     String(role || '').toLowerCase()
@@ -100,7 +104,8 @@ function Calendar({ supabase, club, role, userId }) {
     if (!event?.id) return;
 
     setSelectedEvent(event);
-    setAttendanceMode(false);
+    setMyResponse('maybe');
+    setMyAttendance('present');
 
     const [responseResult, attendanceResult] = await Promise.all([
       supabase
@@ -119,13 +124,15 @@ function Calendar({ supabase, club, role, userId }) {
     ]);
 
     if (responseResult.error) {
-      setMessage('Nepodarilo sa načítať tvoju odpoveď.');
+      setMessage('Nepodarilo sa načítať tvoju odpoveď: ' + responseResult.error.message);
     } else {
       setMyResponse(responseResult.data?.response || 'maybe');
     }
 
-    if (!attendanceResult.error && attendanceResult.data) {
-      setMyAttendance(attendanceResult.data.attendance_status);
+    if (attendanceResult.error) {
+      setMessage('Nepodarilo sa načítať tvoju dochádzku: ' + attendanceResult.error.message);
+    } else if (attendanceResult.data) {
+      setMyAttendance(attendanceResult.data.attendance_status || 'present');
     }
 
     if (canManage) {
@@ -140,6 +147,13 @@ function Calendar({ supabase, club, role, userId }) {
           .select('*')
           .eq('event_id', event.id),
       ]);
+
+      if (allResponses.error) {
+        setMessage('Nepodarilo sa načítať prehľad odpovedí: ' + allResponses.error.message);
+      }
+      if (allAttendance.error) {
+        setMessage('Nepodarilo sa načítať prehľad dochádzky: ' + allAttendance.error.message);
+      }
 
       setResponses(allResponses.data || []);
       setAttendance(allAttendance.data || []);
@@ -161,9 +175,7 @@ function Calendar({ supabase, club, role, userId }) {
     const offset = (first.getDay() + 6) % 7;
     const days = [];
 
-    for (let i = 0; i < offset; i++) {
-      days.push(null);
-    }
+    for (let i = 0; i < offset; i++) days.push(null);
 
     for (let day = 1; day <= last.getDate(); day++) {
       days.push(new Date(year, monthIndex, day));
@@ -176,11 +188,15 @@ function Calendar({ supabase, club, role, userId }) {
 
   const eventsByDate = useMemo(() => {
     const grouped = {};
+
     events.forEach(event => {
       const key = event.occurrence_date;
+
       if (!grouped[key]) grouped[key] = [];
+
       grouped[key].push(event);
     });
+
     return grouped;
   }, [events]);
 
@@ -194,6 +210,11 @@ function Calendar({ supabase, club, role, userId }) {
 
     if (form.end_time <= form.start_time) {
       setMessage('Koniec musí byť po začiatku.');
+      return;
+    }
+
+    if (form.recurring && form.event_type !== 'training') {
+      setMessage('Opakovať možno iba klubový tréning.');
       return;
     }
 
@@ -250,7 +271,7 @@ function Calendar({ supabase, club, role, userId }) {
           .insert({
             club_id: club.id,
             occurrence_date: form.date,
-            event_type: 'event',
+            event_type: form.event_type,
             title: form.title.trim(),
             description: form.description.trim() || null,
             location: form.location.trim() || null,
@@ -262,10 +283,13 @@ function Calendar({ supabase, club, role, userId }) {
 
         if (error) throw error;
 
-        setMessage('Udalosť bola vytvorená.');
+        setMessage(form.event_type === 'training'
+          ? 'Tréning bol vytvorený.'
+          : 'Udalosť bola vytvorená.');
       }
 
       setShowForm(false);
+
       setForm({
         ...emptyForm,
         date: dateKey(new Date()),
@@ -281,7 +305,7 @@ function Calendar({ supabase, club, role, userId }) {
   }
 
   async function saveResponse() {
-    if (!selectedEvent) return;
+    if (!selectedEvent || !userId) return;
 
     const { error } = await supabase
       .from('club_event_responses')
@@ -290,9 +314,7 @@ function Calendar({ supabase, club, role, userId }) {
         user_id: userId,
         response: myResponse,
         updated_at: new Date().toISOString(),
-      }, {
-        onConflict: 'event_id,user_id',
-      });
+      }, { onConflict: 'event_id,user_id' });
 
     if (error) {
       setMessage('Odpoveď sa nepodarilo uložiť: ' + error.message);
@@ -303,7 +325,7 @@ function Calendar({ supabase, club, role, userId }) {
   }
 
   async function saveMyAttendance() {
-    if (!selectedEvent || !canManage) return;
+    if (!selectedEvent || !canManage || !userId) return;
 
     const { error } = await supabase
       .from('club_event_attendance')
@@ -313,9 +335,7 @@ function Calendar({ supabase, club, role, userId }) {
         attendance_status: myAttendance,
         recorded_by: userId,
         recorded_at: new Date().toISOString(),
-      }, {
-        onConflict: 'event_id,user_id',
-      });
+      }, { onConflict: 'event_id,user_id' });
 
     if (error) {
       setMessage('Dochádzku sa nepodarilo uložiť: ' + error.message);
@@ -325,12 +345,45 @@ function Calendar({ supabase, club, role, userId }) {
     }
   }
 
+  async function updateEventStatus(event, nextStatus) {
+    if (!canManage || !event) return;
+
+    const prompts = {
+      in_progress: 'Naozaj chceš označiť tréning ako začatý?',
+      completed: 'Naozaj chceš označiť tréning ako ukončený?',
+    };
+
+    if (prompts[nextStatus] && !window.confirm(prompts[nextStatus])) return;
+
+    const { data, error } = await supabase
+      .from('club_events')
+      .update({ status: nextStatus })
+      .eq('id', event.id)
+      .eq('club_id', club.id)
+      .select('*')
+      .single();
+
+    if (error) {
+      setMessage('Stav tréningu sa nepodarilo zmeniť: ' + error.message);
+      return;
+    }
+
+    setSelectedEvent(data);
+
+    setEvents(current =>
+      current.map(item => item.id === data.id ? data : item)
+    );
+
+    setMessage(nextStatus === 'in_progress'
+      ? 'Tréning bol spustený.'
+      : 'Tréning bol označený ako ukončený.');
+  }
+
   async function cancelEvent(event) {
     if (!canManage || !event) return;
 
-    const confirmed = window.confirm(
-      'Naozaj chceš zrušiť tento termín?'
-    );
+    const confirmed = window.confirm('Naozaj chceš zrušiť tento termín?');
+
     if (!confirmed) return;
 
     const { error } = await supabase.rpc(
@@ -362,14 +415,26 @@ function Calendar({ supabase, club, role, userId }) {
       current.getMonth() + amount,
       1
     ));
+
     setSelectedEvent(null);
   }
 
   function formatTime(value) {
     if (!value) return '';
+
     return new Date(value).toLocaleTimeString('sk-SK', {
       hour: '2-digit',
       minute: '2-digit',
+    });
+  }
+
+  function formatDate(value) {
+    if (!value) return '';
+
+    return new Date(`${value}T12:00:00`).toLocaleDateString('sk-SK', {
+      day: 'numeric',
+      month: 'long',
+      year: 'numeric',
     });
   }
 
@@ -396,6 +461,7 @@ function Calendar({ supabase, club, role, userId }) {
                 date: dateKey(new Date()),
                 until: dateKey(new Date(Date.now() + 90 * 86400000)),
               });
+
               setShowForm(true);
             }}
           >
@@ -405,31 +471,51 @@ function Calendar({ supabase, club, role, userId }) {
       </div>
 
       {message && (
-        <div className="sp-cal-message">
-          {message}
-          <button onClick={() => setMessage('')}>×</button>
+        <div className="sp-cal-message" role="status">
+          <span>{message}</span>
+          <button
+            onClick={() => setMessage('')}
+            aria-label="Zavrieť správu"
+          >
+            ×
+          </button>
         </div>
       )}
 
       <div className="sp-cal-panel">
         <div className="sp-cal-monthbar">
-          <button onClick={() => changeMonth(-1)} aria-label="Predchádzajúci mesiac">
+          <button
+            onClick={() => changeMonth(-1)}
+            aria-label="Predchádzajúci mesiac"
+          >
             <ChevronLeft />
           </button>
+
           <h2>{monthName}</h2>
-          <button onClick={() => changeMonth(1)} aria-label="Nasledujúci mesiac">
+
+          <button
+            onClick={() => changeMonth(1)}
+            aria-label="Nasledujúci mesiac"
+          >
             <ChevronRight />
           </button>
         </div>
 
         <div className="sp-cal-grid">
           {['Po', 'Ut', 'St', 'Št', 'Pi', 'So', 'Ne'].map(day => (
-            <div className="sp-cal-weekday" key={day}>{day}</div>
+            <div className="sp-cal-weekday" key={day}>
+              {day}
+            </div>
           ))}
 
           {calendarDays.map((date, index) => {
             if (!date) {
-              return <div className="sp-cal-day empty" key={`empty-${index}`} />;
+              return (
+                <div
+                  className="sp-cal-day empty"
+                  key={`empty-${index}`}
+                />
+              );
             }
 
             const key = dateKey(date);
@@ -441,19 +527,26 @@ function Calendar({ supabase, club, role, userId }) {
                 className={`sp-cal-day ${today ? 'today' : ''}`}
                 key={key}
                 onClick={() => {
-                  if (dayEvents.length) loadEventDetails(dayEvents[0]);
+                  if (dayEvents.length) {
+                    loadEventDetails(dayEvents[0]);
+                  }
                 }}
+                aria-label={`${key}, ${dayEvents.length} udalostí`}
               >
-                <span className="sp-cal-day-number">{date.getDate()}</span>
+                <span className="sp-cal-day-number">
+                  {date.getDate()}
+                </span>
+
                 {dayEvents.slice(0, 2).map(item => (
                   <span
-                    className={`sp-cal-dot ${item.status}`}
+                    className={`sp-cal-dot ${item.status} ${item.event_type}`}
                     key={item.id}
-                    title={item.title}
+                    title={`${item.title} – ${statusLabels[item.status] || item.status}`}
                   >
                     {item.title}
                   </span>
                 ))}
+
                 {dayEvents.length > 2 && (
                   <small>+{dayEvents.length - 2} ďalšie</small>
                 )}
@@ -464,6 +557,8 @@ function Calendar({ supabase, club, role, userId }) {
 
         <div className="sp-cal-legend">
           <span><i className="planned" /> Naplánované</span>
+          <span><i className="progress" /> Prebieha</span>
+          <span><i className="completed" /> Ukončené</span>
           <span><i className="cancelled" /> Zrušené</span>
         </div>
       </div>
@@ -471,15 +566,23 @@ function Calendar({ supabase, club, role, userId }) {
       <div className="sp-cal-panel">
         <div className="sp-cal-section-title">
           <h2>Udalosti v mesiaci</h2>
-          <button className="sp-cal-refresh" onClick={loadEvents}>
-            <RefreshCw size={15} /> Obnoviť
+
+          <button
+            className="sp-cal-refresh"
+            onClick={loadEvents}
+            disabled={loading}
+          >
+            <RefreshCw size={15} />
+            {loading ? 'Načítavam…' : 'Obnoviť'}
           </button>
         </div>
 
         {loading ? (
           <p className="sp-cal-empty">Načítavam kalendár…</p>
         ) : events.length === 0 ? (
-          <p className="sp-cal-empty">V tomto mesiaci nie sú naplánované žiadne udalosti.</p>
+          <p className="sp-cal-empty">
+            V tomto mesiaci nie sú naplánované žiadne udalosti.
+          </p>
         ) : (
           <div className="sp-cal-event-list">
             {events.map(event => (
@@ -489,7 +592,10 @@ function Calendar({ supabase, club, role, userId }) {
                 onClick={() => loadEventDetails(event)}
               >
                 <div className="sp-cal-event-date">
-                  <strong>{new Date(`${event.occurrence_date}T12:00:00`).getDate()}</strong>
+                  <strong>
+                    {new Date(`${event.occurrence_date}T12:00:00`).getDate()}
+                  </strong>
+
                   <small>
                     {new Date(`${event.occurrence_date}T12:00:00`)
                       .toLocaleDateString('sk-SK', { month: 'short' })}
@@ -498,18 +604,25 @@ function Calendar({ supabase, club, role, userId }) {
 
                 <div className="sp-cal-event-info">
                   <strong>{event.title}</strong>
+
                   <span>
                     <Clock size={13} />
                     {formatTime(event.starts_at)} – {formatTime(event.ends_at)}
                   </span>
+
                   {event.location && (
-                    <span><MapPin size={13} /> {event.location}</span>
+                    <span>
+                      <MapPin size={13} /> {event.location}
+                    </span>
                   )}
+
+                  <small className="sp-cal-event-type">
+                    {event.event_type === 'training' ? 'Tréning' : 'Udalosť'}
+                  </small>
                 </div>
 
                 <span className={`sp-cal-status ${event.status}`}>
-                  {event.status === 'cancelled' ? 'Zrušené' :
-                    event.status === 'completed' ? 'Ukončené' : 'Naplánované'}
+                  {statusLabels[event.status] || event.status}
                 </span>
               </button>
             ))}
@@ -518,52 +631,97 @@ function Calendar({ supabase, club, role, userId }) {
       </div>
 
       {selectedEvent && (
-        <div className="sp-cal-overlay" onClick={() => setSelectedEvent(null)}>
-          <div className="sp-cal-modal" onClick={e => e.stopPropagation()}>
+        <div
+          className="sp-cal-overlay"
+          onClick={() => setSelectedEvent(null)}
+        >
+          <div
+            className="sp-cal-modal"
+            onClick={e => e.stopPropagation()}
+          >
             <div className="sp-cal-modal-head">
               <div>
                 <span className="sp-kicker">
-                  {selectedEvent.event_type === 'training' ? 'KLUBOVÝ TRÉNING' : 'KLUBOVÁ UDALOSŤ'}
+                  {selectedEvent.event_type === 'training'
+                    ? 'KLUBOVÝ TRÉNING'
+                    : 'KLUBOVÁ UDALOSŤ'}
                 </span>
+
                 <h2>{selectedEvent.title}</h2>
               </div>
-              <button onClick={() => setSelectedEvent(null)}>×</button>
+
+              <button
+                onClick={() => setSelectedEvent(null)}
+                aria-label="Zavrieť"
+              >
+                ×
+              </button>
             </div>
 
             <div className="sp-cal-detail-meta">
-              <span><CalendarDays size={16} /> {selectedEvent.occurrence_date}</span>
-              <span><Clock size={16} /> {formatTime(selectedEvent.starts_at)} – {formatTime(selectedEvent.ends_at)}</span>
+              <span>
+                <CalendarDays size={16} />
+                {formatDate(selectedEvent.occurrence_date)}
+              </span>
+
+              <span>
+                <Clock size={16} />
+                {formatTime(selectedEvent.starts_at)} – {formatTime(selectedEvent.ends_at)}
+              </span>
+
               {selectedEvent.location && (
-                <span><MapPin size={16} /> {selectedEvent.location}</span>
+                <span>
+                  <MapPin size={16} /> {selectedEvent.location}
+                </span>
               )}
+
+              <span className={`sp-cal-status ${selectedEvent.status}`}>
+                Stav: {statusLabels[selectedEvent.status] || selectedEvent.status}
+              </span>
             </div>
 
             {selectedEvent.description && (
-              <p className="sp-cal-description">{selectedEvent.description}</p>
+              <p className="sp-cal-description">
+                {selectedEvent.description}
+              </p>
             )}
 
             {selectedEvent.status === 'cancelled' ? (
-              <p className="sp-cal-warning">Tento termín bol zrušený.</p>
+              <p className="sp-cal-warning">
+                Tento termín bol zrušený.
+              </p>
             ) : (
               <>
                 <div className="sp-cal-subsection">
-                  <h3><Users size={17} /> Tvoja účasť</h3>
+                  <h3>
+                    <Users size={17} /> Tvoja účasť
+                  </h3>
+
                   <div className="sp-cal-choice-row">
-                    {[
-                      ['attending', 'Prídem', CheckCircle2],
-                      ['not_attending', 'Neprídem', XCircle],
-                      ['maybe', 'Ešte neviem', HelpCircle],
-                    ].map(([value, label, Icon]) => (
-                      <button
-                        key={value}
-                        className={myResponse === value ? 'active' : ''}
-                        onClick={() => setMyResponse(value)}
-                      >
-                        <Icon size={16} /> {label}
-                      </button>
-                    ))}
+                    {Object.entries(responseLabels).map(([value, label]) => {
+                      const Icon =
+                        value === 'attending'
+                          ? CheckCircle2
+                          : value === 'not_attending'
+                            ? XCircle
+                            : HelpCircle;
+
+                      return (
+                        <button
+                          key={value}
+                          className={myResponse === value ? 'active' : ''}
+                          onClick={() => setMyResponse(value)}
+                        >
+                          <Icon size={16} /> {label}
+                        </button>
+                      );
+                    })}
                   </div>
-                  <button className="sp-primary sp-cal-save" onClick={saveResponse}>
+
+                  <button
+                    className="sp-primary sp-cal-save"
+                    onClick={saveResponse}
+                  >
                     Potvrdiť účasť
                   </button>
                 </div>
@@ -571,10 +729,14 @@ function Calendar({ supabase, club, role, userId }) {
                 {canManage && (
                   <>
                     <div className="sp-cal-subsection">
-                      <h3><ClipboardCheck size={17} /> Evidencia dochádzky</h3>
+                      <h3>
+                        <ClipboardCheck size={17} /> Evidencia dochádzky
+                      </h3>
+
                       <p className="sp-cal-hint">
                         Skutočnú dochádzku zaznamenáva organizátor po tréningu.
                       </p>
+
                       <div className="sp-cal-choice-row">
                         {Object.entries(attendanceLabels).map(([value, label]) => (
                           <button
@@ -586,26 +748,50 @@ function Calendar({ supabase, club, role, userId }) {
                           </button>
                         ))}
                       </div>
-                      <button className="sp-outline sp-cal-save" onClick={saveMyAttendance}>
+
+                      <button
+                        className="sp-outline sp-cal-save"
+                        onClick={saveMyAttendance}
+                      >
                         Uložiť moju dochádzku
                       </button>
                     </div>
 
                     <div className="sp-cal-subsection">
                       <h3>Prehľad odpovedí členov</h3>
+
                       <div className="sp-cal-counts">
-                        <span>Prídu: {responses.filter(r => r.response === 'attending').length}</span>
-                        <span>Neprídu: {responses.filter(r => r.response === 'not_attending').length}</span>
-                        <span>Nevedia: {responses.filter(r => r.response === 'maybe').length}</span>
+                        <span>
+                          Prídu: {responses.filter(r => r.response === 'attending').length}
+                        </span>
+
+                        <span>
+                          Neprídu: {responses.filter(r => r.response === 'not_attending').length}
+                        </span>
+
+                        <span>
+                          Nevedia: {responses.filter(r => r.response === 'maybe').length}
+                        </span>
                       </div>
+
                       <h3>Zapísaná dochádzka</h3>
+
                       <div className="sp-cal-counts">
-                        <span>Prítomní: {attendance.filter(a => a.attendance_status === 'present').length}</span>
-                        <span>Neprítomní: {attendance.filter(a => a.attendance_status === 'absent').length}</span>
-                        <span>Ospravedlnení: {attendance.filter(a => a.attendance_status === 'excused').length}</span>
+                        <span>
+                          Prítomní: {attendance.filter(a => a.attendance_status === 'present').length}
+                        </span>
+
+                        <span>
+                          Neprítomní: {attendance.filter(a => a.attendance_status === 'absent').length}
+                        </span>
+
+                        <span>
+                          Ospravedlnení: {attendance.filter(a => a.attendance_status === 'excused').length}
+                        </span>
                       </div>
+
                       <p className="sp-cal-hint">
-                        Záznamy členov sú v tejto verzii dostupné cez databázu; mená členov doplníme po prepojení používateľských profilov.
+                        Počty vychádzajú zo záznamov v databáze. Mená členov vyžadujú prepojenie na používateľské profily.
                       </p>
                     </div>
                   </>
@@ -613,13 +799,34 @@ function Calendar({ supabase, club, role, userId }) {
               </>
             )}
 
-            {canManage && selectedEvent.event_type === 'training' &&
+            {canManage &&
+              selectedEvent.event_type === 'training' &&
               selectedEvent.status === 'scheduled' && (
+                <div className="sp-cal-management-actions">
+                  <button
+                    className="sp-cal-start"
+                    onClick={() => updateEventStatus(selectedEvent, 'in_progress')}
+                  >
+                    <Play size={16} /> Spustiť tréning
+                  </button>
+
+                  <button
+                    className="sp-cal-cancel"
+                    onClick={() => cancelEvent(selectedEvent)}
+                  >
+                    <Ban size={16} /> Zrušiť tento termín
+                  </button>
+                </div>
+              )}
+
+            {canManage &&
+              selectedEvent.event_type === 'training' &&
+              selectedEvent.status === 'in_progress' && (
                 <button
-                  className="sp-cal-cancel"
-                  onClick={() => cancelEvent(selectedEvent)}
+                  className="sp-cal-complete"
+                  onClick={() => updateEventStatus(selectedEvent, 'completed')}
                 >
-                  <Ban size={16} /> Zrušiť tento termín
+                  <Flag size={16} /> Ukončiť tréning
                 </button>
               )}
           </div>
@@ -627,15 +834,45 @@ function Calendar({ supabase, club, role, userId }) {
       )}
 
       {showForm && (
-        <div className="sp-cal-overlay" onClick={() => setShowForm(false)}>
-          <form className="sp-cal-modal" onSubmit={saveEvent} onClick={e => e.stopPropagation()}>
+        <div
+          className="sp-cal-overlay"
+          onClick={() => setShowForm(false)}
+        >
+          <form
+            className="sp-cal-modal"
+            onSubmit={saveEvent}
+            onClick={e => e.stopPropagation()}
+          >
             <div className="sp-cal-modal-head">
               <div>
                 <span className="sp-kicker">KLUBOVÝ KALENDÁR</span>
                 <h2>Nová udalosť</h2>
               </div>
-              <button type="button" onClick={() => setShowForm(false)}>×</button>
+
+              <button
+                type="button"
+                onClick={() => setShowForm(false)}
+                aria-label="Zavrieť"
+              >
+                ×
+              </button>
             </div>
+
+            <label>Typ
+              <select
+                value={form.event_type}
+                onChange={e => setForm(current => ({
+                  ...current,
+                  event_type: e.target.value,
+                  recurring: e.target.value === 'training'
+                    ? current.recurring
+                    : false,
+                }))}
+              >
+                <option value="training">Klubový tréning</option>
+                <option value="event">Klubová udalosť</option>
+              </select>
+            </label>
 
             <label>Názov
               <input
@@ -651,7 +888,7 @@ function Calendar({ supabase, club, role, userId }) {
                 value={form.description}
                 onChange={e => setForm({ ...form, description: e.target.value })}
                 rows={3}
-                placeholder="Podrobnosti o tréningu..."
+                placeholder="Podrobnosti o tréningu alebo udalosti..."
               />
             </label>
 
@@ -681,6 +918,7 @@ function Calendar({ supabase, club, role, userId }) {
                   required
                 />
               </label>
+
               <label>Koniec
                 <input
                   type="time"
@@ -691,18 +929,24 @@ function Calendar({ supabase, club, role, userId }) {
               </label>
             </div>
 
-            <label className="sp-cal-check">
-              <input
-                type="checkbox"
-                checked={form.recurring}
-                onChange={e => setForm({ ...form, recurring: e.target.checked })}
-              />
-              Opakovať tréning každý týždeň
-            </label>
+            {form.event_type === 'training' && (
+              <label className="sp-cal-check">
+                <input
+                  type="checkbox"
+                  checked={form.recurring}
+                  onChange={e => setForm({
+                    ...form,
+                    recurring: e.target.checked,
+                  })}
+                />
+                Opakovať tréning každý týždeň
+              </label>
+            )}
 
-            {form.recurring && (
+            {form.recurring && form.event_type === 'training' && (
               <>
                 <label>Dni tréningu</label>
+
                 <div className="sp-cal-weekday-select">
                   {WEEKDAYS.map(([day, label]) => (
                     <button
@@ -725,6 +969,7 @@ function Calendar({ supabase, club, role, userId }) {
                     required
                   />
                 </label>
+
                 <p className="sp-cal-hint">
                   Termíny sa vytvoria do zvoleného dátumu. Neskôr bude možné sériu predĺžiť.
                 </p>
@@ -732,11 +977,20 @@ function Calendar({ supabase, club, role, userId }) {
             )}
 
             <div className="sp-cal-form-actions">
-              <button type="button" className="sp-outline" onClick={() => setShowForm(false)}>
+              <button
+                type="button"
+                className="sp-outline"
+                onClick={() => setShowForm(false)}
+              >
                 Zrušiť
               </button>
+
               <button className="sp-primary" disabled={saving}>
-                {saving ? 'Ukladám…' : 'Uložiť udalosť'}
+                {saving
+                  ? 'Ukladám…'
+                  : form.event_type === 'training'
+                    ? 'Uložiť tréning'
+                    : 'Uložiť udalosť'}
               </button>
             </div>
           </form>
@@ -745,84 +999,52 @@ function Calendar({ supabase, club, role, userId }) {
 
       <style>{`
         .sp-calendar { color:#f5f7fb; }
-        .sp-calendar-heading {
-          display:flex; justify-content:space-between; align-items:center;
-          gap:18px; margin-bottom:24px;
-        }
+        .sp-calendar-heading { display:flex; justify-content:space-between; align-items:center; gap:18px; margin-bottom:24px; }
         .sp-calendar-heading h1 { margin:7px 0; font-size:32px; }
         .sp-calendar-heading p { color:#9eacc1; margin:0; font-size:13px; }
-        .sp-cal-panel {
-          background:linear-gradient(145deg,#14243b,#101c30);
-          border:1px solid rgba(255,255,255,.09);
-          border-radius:15px; padding:20px; margin-bottom:20px;
-        }
-        .sp-cal-monthbar {
-          display:flex; align-items:center; justify-content:space-between;
-          margin-bottom:18px;
-        }
+        .sp-cal-panel { background:linear-gradient(145deg,#14243b,#101c30); border:1px solid rgba(255,255,255,.09); border-radius:15px; padding:20px; margin-bottom:20px; }
+        .sp-cal-monthbar { display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; }
         .sp-cal-monthbar h2 { text-transform:capitalize; margin:0; font-size:19px; }
-        .sp-cal-monthbar button,.sp-cal-modal-head>button {
-          border:1px solid rgba(217,180,92,.3); color:#f1d58d;
-          background:#172944; border-radius:9px; padding:7px 10px;
-        }
-        .sp-cal-grid {
-          display:grid; grid-template-columns:repeat(7,minmax(0,1fr));
-          gap:6px;
-        }
+        .sp-cal-monthbar button,.sp-cal-modal-head>button { border:1px solid rgba(217,180,92,.3); color:#f1d58d; background:#172944; border-radius:9px; padding:7px 10px; }
+        .sp-cal-grid { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:6px; }
         .sp-cal-weekday { text-align:center; color:#9eacc1; font-size:11px; padding:8px 0; }
-        .sp-cal-day {
-          min-width:0; min-height:82px; padding:7px;
-          border:1px solid rgba(255,255,255,.07); border-radius:9px;
-          background:#0d192b; color:#f5f7fb; text-align:left;
-          display:flex; flex-direction:column; gap:4px;
-        }
+        .sp-cal-day { min-width:0; min-height:82px; padding:7px; border:1px solid rgba(255,255,255,.07); border-radius:9px; background:#0d192b; color:#f5f7fb; text-align:left; display:flex; flex-direction:column; gap:4px; }
         .sp-cal-day.empty { background:transparent; border-color:transparent; }
         .sp-cal-day.today { border-color:#d9b45c; }
         .sp-cal-day-number { font-size:12px; font-weight:800; }
-        .sp-cal-dot {
-          display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
-          border-radius:4px; padding:3px 4px; font-size:9px;
-          background:#193657; color:#9fcaff;
-        }
+        .sp-cal-dot { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; border-radius:4px; padding:3px 4px; font-size:9px; background:#193657; color:#9fcaff; }
+        .sp-cal-dot.in_progress { background:#59451d; color:#ffe09a; }
+        .sp-cal-dot.completed { background:#234b3b; color:#a7e4c3; }
         .sp-cal-dot.cancelled { background:#48242b; color:#ff9ca3; text-decoration:line-through; }
         .sp-cal-day small { color:#9eacc1; font-size:9px; }
-        .sp-cal-legend { display:flex; gap:18px; margin-top:14px; color:#9eacc1; font-size:11px; }
+        .sp-cal-legend { display:flex; flex-wrap:wrap; gap:18px; margin-top:14px; color:#9eacc1; font-size:11px; }
         .sp-cal-legend span { display:flex; align-items:center; gap:6px; }
         .sp-cal-legend i { width:8px; height:8px; border-radius:50%; background:#559be8; }
+        .sp-cal-legend i.progress { background:#d9b45c; }
+        .sp-cal-legend i.completed { background:#58b58a; }
         .sp-cal-legend i.cancelled { background:#e36b72; }
         .sp-cal-section-title { display:flex; justify-content:space-between; align-items:center; }
         .sp-cal-section-title h2 { font-size:17px; }
         .sp-cal-refresh { display:flex; align-items:center; gap:6px; background:none; border:0; color:#f1d58d; }
+        .sp-cal-refresh:disabled { opacity:.55; }
         .sp-cal-event-list { display:grid; gap:8px; }
-        .sp-cal-event {
-          display:flex; align-items:center; gap:14px; width:100%;
-          text-align:left; padding:12px; border:1px solid rgba(255,255,255,.08);
-          border-radius:11px; background:#0d192b; color:#f5f7fb;
-        }
+        .sp-cal-event { display:flex; align-items:center; gap:14px; width:100%; text-align:left; padding:12px; border:1px solid rgba(255,255,255,.08); border-radius:11px; background:#0d192b; color:#f5f7fb; }
         .sp-cal-event.cancelled { opacity:.65; }
-        .sp-cal-event-date {
-          min-width:43px; height:48px; display:grid; place-content:center;
-          text-align:center; border-radius:9px; background:#172944;
-        }
+        .sp-cal-event.in_progress { border-color:rgba(217,180,92,.5); }
+        .sp-cal-event-date { min-width:43px; height:48px; display:grid; place-content:center; text-align:center; border-radius:9px; background:#172944; }
         .sp-cal-event-date strong { font-size:19px; }
         .sp-cal-event-date small { color:#d9b45c; text-transform:capitalize; }
         .sp-cal-event-info { flex:1; display:grid; gap:5px; min-width:0; }
         .sp-cal-event-info>strong { font-size:13px; }
         .sp-cal-event-info span { display:flex; align-items:center; gap:6px; color:#9eacc1; font-size:11px; }
-        .sp-cal-status { font-size:10px; color:#8fc5ff; }
+        .sp-cal-event-type { color:#d9b45c; font-size:10px; }
+        .sp-cal-status { font-size:10px; color:#8fc5ff; white-space:nowrap; }
         .sp-cal-status.cancelled { color:#ff9ca3; }
-        .sp-cal-status.completed { color:#b4c4d9; }
+        .sp-cal-status.completed { color:#8fd2ac; }
+        .sp-cal-status.in_progress { color:#f1d58d; }
         .sp-cal-empty { text-align:center; color:#9eacc1; padding:25px; }
-        .sp-cal-overlay {
-          position:fixed; inset:0; z-index:80; background:#030914dd;
-          display:grid; place-items:center; padding:16px; overflow:auto;
-        }
-        .sp-cal-modal {
-          width:min(620px,100%); max-height:94vh; overflow:auto;
-          display:grid; gap:14px; padding:23px;
-          background:#101e33; border:1px solid rgba(217,180,92,.3);
-          border-radius:17px; box-shadow:0 25px 80px #0009;
-        }
+        .sp-cal-overlay { position:fixed; inset:0; z-index:80; background:#030914dd; display:grid; place-items:center; padding:16px; overflow:auto; }
+        .sp-cal-modal { width:min(620px,100%); max-height:94vh; overflow:auto; display:grid; gap:14px; padding:23px; background:#101e33; border:1px solid rgba(217,180,92,.3); border-radius:17px; box-shadow:0 25px 80px #0009; }
         .sp-cal-modal-head { display:flex; align-items:center; justify-content:space-between; }
         .sp-cal-modal-head h2 { margin:5px 0 0; font-size:21px; }
         .sp-cal-modal-head>button { font-size:23px; line-height:1; }
@@ -833,34 +1055,26 @@ function Calendar({ supabase, club, role, userId }) {
         .sp-cal-subsection { border-top:1px solid rgba(255,255,255,.09); padding-top:14px; }
         .sp-cal-subsection h3 { display:flex; align-items:center; gap:8px; font-size:14px; }
         .sp-cal-choice-row { display:flex; flex-wrap:wrap; gap:7px; }
-        .sp-cal-choice-row button,.sp-cal-weekday-select button {
-          border:1px solid rgba(217,180,92,.25); background:#0d192b;
-          color:#c2cee0; border-radius:8px; padding:9px 10px; font-size:11px;
-          display:flex; align-items:center; gap:6px;
-        }
-        .sp-cal-choice-row button.active,.sp-cal-weekday-select button.active {
-          border-color:#d9b45c; color:#f1d58d; background:#26354a;
-        }
+        .sp-cal-choice-row button,.sp-cal-weekday-select button { border:1px solid rgba(217,180,92,.25); background:#0d192b; color:#c2cee0; border-radius:8px; padding:9px 10px; font-size:11px; display:flex; align-items:center; gap:6px; }
+        .sp-cal-choice-row button.active,.sp-cal-weekday-select button.active { border-color:#d9b45c; color:#f1d58d; background:#26354a; }
         .sp-cal-save { margin-top:12px; }
         .sp-cal-counts { display:flex; flex-wrap:wrap; gap:8px; }
         .sp-cal-counts span { background:#172944; padding:8px; border-radius:7px; font-size:11px; color:#dce5f2; }
-        .sp-cal-cancel {
-          display:flex; align-items:center; justify-content:center; gap:8px;
-          border:1px solid #a94c57; background:#48242b; color:#ffb0b5;
-          padding:11px; border-radius:9px;
-        }
+        .sp-cal-management-actions { display:grid; grid-template-columns:1fr 1fr; gap:9px; }
+        .sp-cal-start,.sp-cal-complete,.sp-cal-cancel { display:flex; align-items:center; justify-content:center; gap:8px; padding:11px; border-radius:9px; }
+        .sp-cal-start { border:1px solid #b48b37; background:#4a3919; color:#ffe09a; }
+        .sp-cal-complete { border:1px solid #398b68; background:#173d30; color:#a7e4c3; }
+        .sp-cal-cancel { border:1px solid #a94c57; background:#48242b; color:#ffb0b5; }
         .sp-cal-warning { color:#ff9ca3; }
         .sp-cal-form-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
         .sp-cal-check { display:flex; align-items:center; gap:9px; }
         .sp-cal-check input { width:auto; }
         .sp-cal-weekday-select { display:flex; flex-wrap:wrap; gap:7px; }
         .sp-cal-form-actions { display:flex; justify-content:flex-end; gap:9px; margin-top:8px; }
-        .sp-cal-message {
-          display:flex; justify-content:space-between; gap:12px;
-          background:#172944; color:#f1d58d; border:1px solid rgba(217,180,92,.3);
-          border-radius:9px; padding:12px; margin-bottom:16px; font-size:12px;
-        }
+        .sp-cal-message { display:flex; justify-content:space-between; gap:12px; background:#172944; color:#f1d58d; border:1px solid rgba(217,180,92,.3); border-radius:9px; padding:12px; margin-bottom:16px; font-size:12px; }
         .sp-cal-message button { border:0; background:none; color:#f1d58d; }
+        .sp-cal-modal label { display:grid; gap:6px; color:#c2cee0; font-size:12px; }
+        .sp-cal-modal input:not([type="checkbox"]),.sp-cal-modal textarea,.sp-cal-modal select { width:100%; box-sizing:border-box; border:1px solid rgba(255,255,255,.14); border-radius:8px; padding:10px 11px; background:#0d192b; color:#f5f7fb; font:inherit; }
         @media(max-width:650px) {
           .sp-calendar-heading { align-items:stretch; flex-direction:column; }
           .sp-calendar-heading .sp-primary { width:100%; }
@@ -869,7 +1083,7 @@ function Calendar({ supabase, club, role, userId }) {
           .sp-cal-dot { font-size:8px; }
           .sp-cal-event { gap:9px; padding:9px; }
           .sp-cal-status { display:none; }
-          .sp-cal-form-grid { grid-template-columns:1fr; }
+          .sp-cal-form-grid,.sp-cal-management-actions { grid-template-columns:1fr; }
           .sp-cal-modal { padding:17px; }
         }
       `}</style>
